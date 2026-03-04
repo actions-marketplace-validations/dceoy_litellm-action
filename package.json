@@ -16,7 +16,7 @@
     "test": "jest --coverage",
     "audit": "pnpm audit",
     "audit:fix": "pnpm audit --fix",
-    "all": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
+    "all": "pnpm run format && pnpm run lint:fix && pnpm run typecheck && pnpm run audit:fix && pnpm run test && pnpm run build"
   },
   "repository": {
     "type": "git",
