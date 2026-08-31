@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "jest --coverage",
     "audit": "pnpm audit",
-    "audit:fix": "pnpm audit --fix",
+    "audit:fix": "pnpm audit --fix=override",
     "all": "pnpm run format && pnpm run lint:fix && pnpm run typecheck && pnpm run audit:fix && pnpm run test && pnpm run build"
   },
   "repository": {
@@ -31,18 +31,18 @@
   ],
   "license": "AGPL-3.0",
   "dependencies": {
-    "@actions/cache": "^6.0.0",
-    "@actions/core": "^3.0.0",
+    "@actions/cache": "^6.2.0",
+    "@actions/core": "^3.0.1",
     "@actions/exec": "^3.0.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.7",
+    "@biomejs/biome": "^2.5.7",
     "@types/jest": "^30.0.0",
-    "@types/node": "^25.5.0",
-    "@vercel/ncc": "^0.38.0",
-    "jest": "^30.3.0",
-    "oxlint": "^1.56.0",
-    "ts-jest": "^29.0.0",
+    "@types/node": "^26.2.0",
+    "@vercel/ncc": "^0.45.0",
+    "jest": "^30.4.2",
+    "oxlint": "^1.77.0",
+    "ts-jest": "^29.4.12",
     "typescript": "^5.7.0"
   }
 }
