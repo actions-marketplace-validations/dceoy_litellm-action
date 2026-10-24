@@ -45,5 +45,16 @@
     "oxlint": "^1.88.0",
     "ts-jest": "^29.4.15",
     "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.23.4",
+    "pnpm": ">=11 <13"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.23.4",
+      "onFail": "download"
+    }
   }
 }
