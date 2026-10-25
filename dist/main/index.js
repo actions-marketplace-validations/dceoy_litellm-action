@@ -6529,1018 +6529,6 @@ exports.parseProxyResponse = parseProxyResponse;
 
 /***/ }),
 
-/***/ 6252:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-module.exports = minimatch
-minimatch.Minimatch = Minimatch
-
-var path = (function () { try { return __nccwpck_require__(6928) } catch (e) {}}()) || {
-  sep: '/'
-}
-minimatch.sep = path.sep
-
-var GLOBSTAR = minimatch.GLOBSTAR = Minimatch.GLOBSTAR = {}
-var expand = __nccwpck_require__(7320)
-
-var plTypes = {
-  '!': { open: '(?:(?!(?:', close: '))[^/]*?)'},
-  '?': { open: '(?:', close: ')?' },
-  '+': { open: '(?:', close: ')+' },
-  '*': { open: '(?:', close: ')*' },
-  '@': { open: '(?:', close: ')' }
-}
-
-// any single thing other than /
-// don't need to escape / when using new RegExp()
-var qmark = '[^/]'
-
-// * => any number of characters
-var star = qmark + '*?'
-
-// ** when dots are allowed.  Anything goes, except .. and .
-// not (^ or / followed by one or two dots followed by $ or /),
-// followed by anything, any number of times.
-var twoStarDot = '(?:(?!(?:\\\/|^)(?:\\.{1,2})($|\\\/)).)*?'
-
-// not a ^ or / followed by a dot,
-// followed by anything, any number of times.
-var twoStarNoDot = '(?:(?!(?:\\\/|^)\\.).)*?'
-
-// characters that need to be escaped in RegExp.
-var reSpecials = charSet('().*{}+?[]^$\\!')
-
-// "abc" -> { a:true, b:true, c:true }
-function charSet (s) {
-  return s.split('').reduce(function (set, c) {
-    set[c] = true
-    return set
-  }, {})
-}
-
-// normalizes slashes.
-var slashSplit = /\/+/
-
-minimatch.filter = filter
-function filter (pattern, options) {
-  options = options || {}
-  return function (p, i, list) {
-    return minimatch(p, pattern, options)
-  }
-}
-
-function ext (a, b) {
-  b = b || {}
-  var t = {}
-  Object.keys(a).forEach(function (k) {
-    t[k] = a[k]
-  })
-  Object.keys(b).forEach(function (k) {
-    t[k] = b[k]
-  })
-  return t
-}
-
-minimatch.defaults = function (def) {
-  if (!def || typeof def !== 'object' || !Object.keys(def).length) {
-    return minimatch
-  }
-
-  var orig = minimatch
-
-  var m = function minimatch (p, pattern, options) {
-    return orig(p, pattern, ext(def, options))
-  }
-
-  m.Minimatch = function Minimatch (pattern, options) {
-    return new orig.Minimatch(pattern, ext(def, options))
-  }
-  m.Minimatch.defaults = function defaults (options) {
-    return orig.defaults(ext(def, options)).Minimatch
-  }
-
-  m.filter = function filter (pattern, options) {
-    return orig.filter(pattern, ext(def, options))
-  }
-
-  m.defaults = function defaults (options) {
-    return orig.defaults(ext(def, options))
-  }
-
-  m.makeRe = function makeRe (pattern, options) {
-    return orig.makeRe(pattern, ext(def, options))
-  }
-
-  m.braceExpand = function braceExpand (pattern, options) {
-    return orig.braceExpand(pattern, ext(def, options))
-  }
-
-  m.match = function (list, pattern, options) {
-    return orig.match(list, pattern, ext(def, options))
-  }
-
-  return m
-}
-
-Minimatch.defaults = function (def) {
-  return minimatch.defaults(def).Minimatch
-}
-
-function minimatch (p, pattern, options) {
-  assertValidPattern(pattern)
-
-  if (!options) options = {}
-
-  // shortcut: comments match nothing.
-  if (!options.nocomment && pattern.charAt(0) === '#') {
-    return false
-  }
-
-  return new Minimatch(pattern, options).match(p)
-}
-
-function Minimatch (pattern, options) {
-  if (!(this instanceof Minimatch)) {
-    return new Minimatch(pattern, options)
-  }
-
-  assertValidPattern(pattern)
-
-  if (!options) options = {}
-
-  pattern = pattern.trim()
-
-  // windows support: need to use /, not \
-  if (!options.allowWindowsEscape && path.sep !== '/') {
-    pattern = pattern.split(path.sep).join('/')
-  }
-
-  this.options = options
-  this.maxGlobstarRecursion = options.maxGlobstarRecursion !== undefined
-    ? options.maxGlobstarRecursion : 200
-  this.set = []
-  this.pattern = pattern
-  this.regexp = null
-  this.negate = false
-  this.comment = false
-  this.empty = false
-  this.partial = !!options.partial
-
-  // make the set of regexps etc.
-  this.make()
-}
-
-Minimatch.prototype.debug = function () {}
-
-Minimatch.prototype.make = make
-function make () {
-  var pattern = this.pattern
-  var options = this.options
-
-  // empty patterns and comments match nothing.
-  if (!options.nocomment && pattern.charAt(0) === '#') {
-    this.comment = true
-    return
-  }
-  if (!pattern) {
-    this.empty = true
-    return
-  }
-
-  // step 1: figure out negation, etc.
-  this.parseNegate()
-
-  // step 2: expand braces
-  var set = this.globSet = this.braceExpand()
-
-  if (options.debug) this.debug = function debug() { console.error.apply(console, arguments) }
-
-  this.debug(this.pattern, set)
-
-  // step 3: now we have a set, so turn each one into a series of path-portion
-  // matching patterns.
-  // These will be regexps, except in the case of "**", which is
-  // set to the GLOBSTAR object for globstar behavior,
-  // and will not contain any / characters
-  set = this.globParts = set.map(function (s) {
-    return s.split(slashSplit)
-  })
-
-  this.debug(this.pattern, set)
-
-  // glob --> regexps
-  set = set.map(function (s, si, set) {
-    return s.map(this.parse, this)
-  }, this)
-
-  this.debug(this.pattern, set)
-
-  // filter out everything that didn't compile properly.
-  set = set.filter(function (s) {
-    return s.indexOf(false) === -1
-  })
-
-  this.debug(this.pattern, set)
-
-  this.set = set
-}
-
-Minimatch.prototype.parseNegate = parseNegate
-function parseNegate () {
-  var pattern = this.pattern
-  var negate = false
-  var options = this.options
-  var negateOffset = 0
-
-  if (options.nonegate) return
-
-  for (var i = 0, l = pattern.length
-    ; i < l && pattern.charAt(i) === '!'
-    ; i++) {
-    negate = !negate
-    negateOffset++
-  }
-
-  if (negateOffset) this.pattern = pattern.substr(negateOffset)
-  this.negate = negate
-}
-
-// Brace expansion:
-// a{b,c}d -> abd acd
-// a{b,}c -> abc ac
-// a{0..3}d -> a0d a1d a2d a3d
-// a{b,c{d,e}f}g -> abg acdfg acefg
-// a{b,c}d{e,f}g -> abdeg acdeg abdeg abdfg
-//
-// Invalid sets are not expanded.
-// a{2..}b -> a{2..}b
-// a{b}c -> a{b}c
-minimatch.braceExpand = function (pattern, options) {
-  return braceExpand(pattern, options)
-}
-
-Minimatch.prototype.braceExpand = braceExpand
-
-function braceExpand (pattern, options) {
-  if (!options) {
-    if (this instanceof Minimatch) {
-      options = this.options
-    } else {
-      options = {}
-    }
-  }
-
-  pattern = typeof pattern === 'undefined'
-    ? this.pattern : pattern
-
-  assertValidPattern(pattern)
-
-  // Thanks to Yeting Li <https://github.com/yetingli> for
-  // improving this regexp to avoid a ReDOS vulnerability.
-  if (options.nobrace || !/\{(?:(?!\{).)*\}/.test(pattern)) {
-    // shortcut. no need to expand.
-    return [pattern]
-  }
-
-  return expand(pattern)
-}
-
-var MAX_PATTERN_LENGTH = 1024 * 64
-var assertValidPattern = function (pattern) {
-  if (typeof pattern !== 'string') {
-    throw new TypeError('invalid pattern')
-  }
-
-  if (pattern.length > MAX_PATTERN_LENGTH) {
-    throw new TypeError('pattern is too long')
-  }
-}
-
-// parse a component of the expanded set.
-// At this point, no pattern may contain "/" in it
-// so we're going to return a 2d array, where each entry is the full
-// pattern, split on '/', and then turned into a regular expression.
-// A regexp is made at the end which joins each array with an
-// escaped /, and another full one which joins each regexp with |.
-//
-// Following the lead of Bash 4.1, note that "**" only has special meaning
-// when it is the *only* thing in a path portion.  Otherwise, any series
-// of * is equivalent to a single *.  Globstar behavior is enabled by
-// default, and can be disabled by setting options.noglobstar.
-Minimatch.prototype.parse = parse
-var SUBPARSE = {}
-function parse (pattern, isSub) {
-  assertValidPattern(pattern)
-
-  var options = this.options
-
-  // shortcuts
-  if (pattern === '**') {
-    if (!options.noglobstar)
-      return GLOBSTAR
-    else
-      pattern = '*'
-  }
-  if (pattern === '') return ''
-
-  var re = ''
-  var hasMagic = !!options.nocase
-  var escaping = false
-  // ? => one single character
-  var patternListStack = []
-  var negativeLists = []
-  var stateChar
-  var inClass = false
-  var reClassStart = -1
-  var classStart = -1
-  // . and .. never match anything that doesn't start with .,
-  // even when options.dot is set.
-  var patternStart = pattern.charAt(0) === '.' ? '' // anything
-  // not (start or / followed by . or .. followed by / or end)
-  : options.dot ? '(?!(?:^|\\\/)\\.{1,2}(?:$|\\\/))'
-  : '(?!\\.)'
-  var self = this
-
-  function clearStateChar () {
-    if (stateChar) {
-      // we had some state-tracking character
-      // that wasn't consumed by this pass.
-      switch (stateChar) {
-        case '*':
-          re += star
-          hasMagic = true
-        break
-        case '?':
-          re += qmark
-          hasMagic = true
-        break
-        default:
-          re += '\\' + stateChar
-        break
-      }
-      self.debug('clearStateChar %j %j', stateChar, re)
-      stateChar = false
-    }
-  }
-
-  for (var i = 0, len = pattern.length, c
-    ; (i < len) && (c = pattern.charAt(i))
-    ; i++) {
-    this.debug('%s\t%s %s %j', pattern, i, re, c)
-
-    // skip over any that are escaped.
-    if (escaping && reSpecials[c]) {
-      re += '\\' + c
-      escaping = false
-      continue
-    }
-
-    switch (c) {
-      /* istanbul ignore next */
-      case '/': {
-        // completely not allowed, even escaped.
-        // Should already be path-split by now.
-        return false
-      }
-
-      case '\\':
-        clearStateChar()
-        escaping = true
-      continue
-
-      // the various stateChar values
-      // for the "extglob" stuff.
-      case '?':
-      case '*':
-      case '+':
-      case '@':
-      case '!':
-        this.debug('%s\t%s %s %j <-- stateChar', pattern, i, re, c)
-
-        // all of those are literals inside a class, except that
-        // the glob [!a] means [^a] in regexp
-        if (inClass) {
-          this.debug('  in class')
-          if (c === '!' && i === classStart + 1) c = '^'
-          re += c
-          continue
-        }
-
-        // coalesce consecutive non-globstar * characters
-        if (c === '*' && stateChar === '*') continue
-
-        // if we already have a stateChar, then it means
-        // that there was something like ** or +? in there.
-        // Handle the stateChar, then proceed with this one.
-        self.debug('call clearStateChar %j', stateChar)
-        clearStateChar()
-        stateChar = c
-        // if extglob is disabled, then +(asdf|foo) isn't a thing.
-        // just clear the statechar *now*, rather than even diving into
-        // the patternList stuff.
-        if (options.noext) clearStateChar()
-      continue
-
-      case '(':
-        if (inClass) {
-          re += '('
-          continue
-        }
-
-        if (!stateChar) {
-          re += '\\('
-          continue
-        }
-
-        patternListStack.push({
-          type: stateChar,
-          start: i - 1,
-          reStart: re.length,
-          open: plTypes[stateChar].open,
-          close: plTypes[stateChar].close
-        })
-        // negation is (?:(?!js)[^/]*)
-        re += stateChar === '!' ? '(?:(?!(?:' : '(?:'
-        this.debug('plType %j %j', stateChar, re)
-        stateChar = false
-      continue
-
-      case ')':
-        if (inClass || !patternListStack.length) {
-          re += '\\)'
-          continue
-        }
-
-        clearStateChar()
-        hasMagic = true
-        var pl = patternListStack.pop()
-        // negation is (?:(?!js)[^/]*)
-        // The others are (?:<pattern>)<type>
-        re += pl.close
-        if (pl.type === '!') {
-          negativeLists.push(pl)
-        }
-        pl.reEnd = re.length
-      continue
-
-      case '|':
-        if (inClass || !patternListStack.length || escaping) {
-          re += '\\|'
-          escaping = false
-          continue
-        }
-
-        clearStateChar()
-        re += '|'
-      continue
-
-      // these are mostly the same in regexp and glob
-      case '[':
-        // swallow any state-tracking char before the [
-        clearStateChar()
-
-        if (inClass) {
-          re += '\\' + c
-          continue
-        }
-
-        inClass = true
-        classStart = i
-        reClassStart = re.length
-        re += c
-      continue
-
-      case ']':
-        //  a right bracket shall lose its special
-        //  meaning and represent itself in
-        //  a bracket expression if it occurs
-        //  first in the list.  -- POSIX.2 2.8.3.2
-        if (i === classStart + 1 || !inClass) {
-          re += '\\' + c
-          escaping = false
-          continue
-        }
-
-        // handle the case where we left a class open.
-        // "[z-a]" is valid, equivalent to "\[z-a\]"
-        // split where the last [ was, make sure we don't have
-        // an invalid re. if so, re-walk the contents of the
-        // would-be class to re-translate any characters that
-        // were passed through as-is
-        // TODO: It would probably be faster to determine this
-        // without a try/catch and a new RegExp, but it's tricky
-        // to do safely.  For now, this is safe and works.
-        var cs = pattern.substring(classStart + 1, i)
-        try {
-          RegExp('[' + cs + ']')
-        } catch (er) {
-          // not a valid class!
-          var sp = this.parse(cs, SUBPARSE)
-          re = re.substr(0, reClassStart) + '\\[' + sp[0] + '\\]'
-          hasMagic = hasMagic || sp[1]
-          inClass = false
-          continue
-        }
-
-        // finish up the class.
-        hasMagic = true
-        inClass = false
-        re += c
-      continue
-
-      default:
-        // swallow any state char that wasn't consumed
-        clearStateChar()
-
-        if (escaping) {
-          // no need
-          escaping = false
-        } else if (reSpecials[c]
-          && !(c === '^' && inClass)) {
-          re += '\\'
-        }
-
-        re += c
-
-    } // switch
-  } // for
-
-  // handle the case where we left a class open.
-  // "[abc" is valid, equivalent to "\[abc"
-  if (inClass) {
-    // split where the last [ was, and escape it
-    // this is a huge pita.  We now have to re-walk
-    // the contents of the would-be class to re-translate
-    // any characters that were passed through as-is
-    cs = pattern.substr(classStart + 1)
-    sp = this.parse(cs, SUBPARSE)
-    re = re.substr(0, reClassStart) + '\\[' + sp[0]
-    hasMagic = hasMagic || sp[1]
-  }
-
-  // handle the case where we had a +( thing at the *end*
-  // of the pattern.
-  // each pattern list stack adds 3 chars, and we need to go through
-  // and escape any | chars that were passed through as-is for the regexp.
-  // Go through and escape them, taking care not to double-escape any
-  // | chars that were already escaped.
-  for (pl = patternListStack.pop(); pl; pl = patternListStack.pop()) {
-    var tail = re.slice(pl.reStart + pl.open.length)
-    this.debug('setting tail', re, pl)
-    // maybe some even number of \, then maybe 1 \, followed by a |
-    tail = tail.replace(/((?:\\{2}){0,64})(\\?)\|/g, function (_, $1, $2) {
-      if (!$2) {
-        // the | isn't already escaped, so escape it.
-        $2 = '\\'
-      }
-
-      // need to escape all those slashes *again*, without escaping the
-      // one that we need for escaping the | character.  As it works out,
-      // escaping an even number of slashes can be done by simply repeating
-      // it exactly after itself.  That's why this trick works.
-      //
-      // I am sorry that you have to see this.
-      return $1 + $1 + $2 + '|'
-    })
-
-    this.debug('tail=%j\n   %s', tail, tail, pl, re)
-    var t = pl.type === '*' ? star
-      : pl.type === '?' ? qmark
-      : '\\' + pl.type
-
-    hasMagic = true
-    re = re.slice(0, pl.reStart) + t + '\\(' + tail
-  }
-
-  // handle trailing things that only matter at the very end.
-  clearStateChar()
-  if (escaping) {
-    // trailing \\
-    re += '\\\\'
-  }
-
-  // only need to apply the nodot start if the re starts with
-  // something that could conceivably capture a dot
-  var addPatternStart = false
-  switch (re.charAt(0)) {
-    case '[': case '.': case '(': addPatternStart = true
-  }
-
-  // Hack to work around lack of negative lookbehind in JS
-  // A pattern like: *.!(x).!(y|z) needs to ensure that a name
-  // like 'a.xyz.yz' doesn't match.  So, the first negative
-  // lookahead, has to look ALL the way ahead, to the end of
-  // the pattern.
-  for (var n = negativeLists.length - 1; n > -1; n--) {
-    var nl = negativeLists[n]
-
-    var nlBefore = re.slice(0, nl.reStart)
-    var nlFirst = re.slice(nl.reStart, nl.reEnd - 8)
-    var nlLast = re.slice(nl.reEnd - 8, nl.reEnd)
-    var nlAfter = re.slice(nl.reEnd)
-
-    nlLast += nlAfter
-
-    // Handle nested stuff like *(*.js|!(*.json)), where open parens
-    // mean that we should *not* include the ) in the bit that is considered
-    // "after" the negated section.
-    var openParensBefore = nlBefore.split('(').length - 1
-    var cleanAfter = nlAfter
-    for (i = 0; i < openParensBefore; i++) {
-      cleanAfter = cleanAfter.replace(/\)[+*?]?/, '')
-    }
-    nlAfter = cleanAfter
-
-    var dollar = ''
-    if (nlAfter === '' && isSub !== SUBPARSE) {
-      dollar = '$'
-    }
-    var newRe = nlBefore + nlFirst + nlAfter + dollar + nlLast
-    re = newRe
-  }
-
-  // if the re is not "" at this point, then we need to make sure
-  // it doesn't match against an empty path part.
-  // Otherwise a/* will match a/, which it should not.
-  if (re !== '' && hasMagic) {
-    re = '(?=.)' + re
-  }
-
-  if (addPatternStart) {
-    re = patternStart + re
-  }
-
-  // parsing just a piece of a larger pattern.
-  if (isSub === SUBPARSE) {
-    return [re, hasMagic]
-  }
-
-  // skip the regexp for non-magical patterns
-  // unescape anything in it, though, so that it'll be
-  // an exact match against a file etc.
-  if (!hasMagic) {
-    return globUnescape(pattern)
-  }
-
-  var flags = options.nocase ? 'i' : ''
-  try {
-    var regExp = new RegExp('^' + re + '$', flags)
-  } catch (er) /* istanbul ignore next - should be impossible */ {
-    // If it was an invalid regular expression, then it can't match
-    // anything.  This trick looks for a character after the end of
-    // the string, which is of course impossible, except in multi-line
-    // mode, but it's not a /m regex.
-    return new RegExp('$.')
-  }
-
-  regExp._glob = pattern
-  regExp._src = re
-
-  return regExp
-}
-
-minimatch.makeRe = function (pattern, options) {
-  return new Minimatch(pattern, options || {}).makeRe()
-}
-
-Minimatch.prototype.makeRe = makeRe
-function makeRe () {
-  if (this.regexp || this.regexp === false) return this.regexp
-
-  // at this point, this.set is a 2d array of partial
-  // pattern strings, or "**".
-  //
-  // It's better to use .match().  This function shouldn't
-  // be used, really, but it's pretty convenient sometimes,
-  // when you just want to work with a regex.
-  var set = this.set
-
-  if (!set.length) {
-    this.regexp = false
-    return this.regexp
-  }
-  var options = this.options
-
-  var twoStar = options.noglobstar ? star
-    : options.dot ? twoStarDot
-    : twoStarNoDot
-  var flags = options.nocase ? 'i' : ''
-
-  var re = set.map(function (pattern) {
-    return pattern.map(function (p) {
-      return (p === GLOBSTAR) ? twoStar
-      : (typeof p === 'string') ? regExpEscape(p)
-      : p._src
-    }).join('\\\/')
-  }).join('|')
-
-  // must match entire pattern
-  // ending in a * or ** will make it less strict.
-  re = '^(?:' + re + ')$'
-
-  // can match anything, as long as it's not this.
-  if (this.negate) re = '^(?!' + re + ').*$'
-
-  try {
-    this.regexp = new RegExp(re, flags)
-  } catch (ex) /* istanbul ignore next - should be impossible */ {
-    this.regexp = false
-  }
-  return this.regexp
-}
-
-minimatch.match = function (list, pattern, options) {
-  options = options || {}
-  var mm = new Minimatch(pattern, options)
-  list = list.filter(function (f) {
-    return mm.match(f)
-  })
-  if (mm.options.nonull && !list.length) {
-    list.push(pattern)
-  }
-  return list
-}
-
-Minimatch.prototype.match = function match (f, partial) {
-  if (typeof partial === 'undefined') partial = this.partial
-  this.debug('match', f, this.pattern)
-  // short-circuit in the case of busted things.
-  // comments, etc.
-  if (this.comment) return false
-  if (this.empty) return f === ''
-
-  if (f === '/' && partial) return true
-
-  var options = this.options
-
-  // windows: need to use /, not \
-  if (path.sep !== '/') {
-    f = f.split(path.sep).join('/')
-  }
-
-  // treat the test path as a set of pathparts.
-  f = f.split(slashSplit)
-  this.debug(this.pattern, 'split', f)
-
-  // just ONE of the pattern sets in this.set needs to match
-  // in order for it to be valid.  If negating, then just one
-  // match means that we have failed.
-  // Either way, return on the first hit.
-
-  var set = this.set
-  this.debug(this.pattern, 'set', set)
-
-  // Find the basename of the path by looking for the last non-empty segment
-  var filename
-  var i
-  for (i = f.length - 1; i >= 0; i--) {
-    filename = f[i]
-    if (filename) break
-  }
-
-  for (i = 0; i < set.length; i++) {
-    var pattern = set[i]
-    var file = f
-    if (options.matchBase && pattern.length === 1) {
-      file = [filename]
-    }
-    var hit = this.matchOne(file, pattern, partial)
-    if (hit) {
-      if (options.flipNegate) return true
-      return !this.negate
-    }
-  }
-
-  // didn't get any hits.  this is success if it's a negative
-  // pattern, failure otherwise.
-  if (options.flipNegate) return false
-  return this.negate
-}
-
-// set partial to true to test if, for example,
-// "/a/b" matches the start of "/*/b/*/d"
-// Partial means, if you run out of file before you run
-// out of pattern, then that's fine, as long as all
-// the parts match.
-Minimatch.prototype.matchOne = function (file, pattern, partial) {
-  if (pattern.indexOf(GLOBSTAR) !== -1) {
-    return this._matchGlobstar(file, pattern, partial, 0, 0)
-  }
-  return this._matchOne(file, pattern, partial, 0, 0)
-}
-
-Minimatch.prototype._matchGlobstar = function (file, pattern, partial, fileIndex, patternIndex) {
-  var i
-
-  // find first globstar from patternIndex
-  var firstgs = -1
-  for (i = patternIndex; i < pattern.length; i++) {
-    if (pattern[i] === GLOBSTAR) { firstgs = i; break }
-  }
-
-  // find last globstar
-  var lastgs = -1
-  for (i = pattern.length - 1; i >= 0; i--) {
-    if (pattern[i] === GLOBSTAR) { lastgs = i; break }
-  }
-
-  var head = pattern.slice(patternIndex, firstgs)
-  var body = partial ? pattern.slice(firstgs + 1) : pattern.slice(firstgs + 1, lastgs)
-  var tail = partial ? [] : pattern.slice(lastgs + 1)
-
-  // check the head
-  if (head.length) {
-    var fileHead = file.slice(fileIndex, fileIndex + head.length)
-    if (!this._matchOne(fileHead, head, partial, 0, 0)) {
-      return false
-    }
-    fileIndex += head.length
-  }
-
-  // check the tail
-  var fileTailMatch = 0
-  if (tail.length) {
-    if (tail.length + fileIndex > file.length) return false
-
-    var tailStart = file.length - tail.length
-    if (this._matchOne(file, tail, partial, tailStart, 0)) {
-      fileTailMatch = tail.length
-    } else {
-      // affordance for stuff like a/**/* matching a/b/
-      if (file[file.length - 1] !== '' ||
-          fileIndex + tail.length === file.length) {
-        return false
-      }
-      tailStart--
-      if (!this._matchOne(file, tail, partial, tailStart, 0)) {
-        return false
-      }
-      fileTailMatch = tail.length + 1
-    }
-  }
-
-  // if body is empty (single ** between head and tail)
-  if (!body.length) {
-    var sawSome = !!fileTailMatch
-    for (i = fileIndex; i < file.length - fileTailMatch; i++) {
-      var f = String(file[i])
-      sawSome = true
-      if (f === '.' || f === '..' ||
-          (!this.options.dot && f.charAt(0) === '.')) {
-        return false
-      }
-    }
-    return partial || sawSome
-  }
-
-  // split body into segments at each GLOBSTAR
-  var bodySegments = [[[], 0]]
-  var currentBody = bodySegments[0]
-  var nonGsParts = 0
-  var nonGsPartsSums = [0]
-  for (var bi = 0; bi < body.length; bi++) {
-    var b = body[bi]
-    if (b === GLOBSTAR) {
-      nonGsPartsSums.push(nonGsParts)
-      currentBody = [[], 0]
-      bodySegments.push(currentBody)
-    } else {
-      currentBody[0].push(b)
-      nonGsParts++
-    }
-  }
-
-  var idx = bodySegments.length - 1
-  var fileLength = file.length - fileTailMatch
-  for (var si = 0; si < bodySegments.length; si++) {
-    bodySegments[si][1] = fileLength -
-      (nonGsPartsSums[idx--] + bodySegments[si][0].length)
-  }
-
-  return !!this._matchGlobStarBodySections(
-    file, bodySegments, fileIndex, 0, partial, 0, !!fileTailMatch
-  )
-}
-
-// return false for "nope, not matching"
-// return null for "not matching, cannot keep trying"
-Minimatch.prototype._matchGlobStarBodySections = function (
-  file, bodySegments, fileIndex, bodyIndex, partial, globStarDepth, sawTail
-) {
-  var bs = bodySegments[bodyIndex]
-  if (!bs) {
-    // just make sure there are no bad dots
-    for (var i = fileIndex; i < file.length; i++) {
-      sawTail = true
-      var f = file[i]
-      if (f === '.' || f === '..' ||
-          (!this.options.dot && f.charAt(0) === '.')) {
-        return false
-      }
-    }
-    return sawTail
-  }
-
-  var body = bs[0]
-  var after = bs[1]
-  while (fileIndex <= after) {
-    var m = this._matchOne(
-      file.slice(0, fileIndex + body.length),
-      body,
-      partial,
-      fileIndex,
-      0
-    )
-    // if limit exceeded, no match. intentional false negative,
-    // acceptable break in correctness for security.
-    if (m && globStarDepth < this.maxGlobstarRecursion) {
-      var sub = this._matchGlobStarBodySections(
-        file, bodySegments,
-        fileIndex + body.length, bodyIndex + 1,
-        partial, globStarDepth + 1, sawTail
-      )
-      if (sub !== false) {
-        return sub
-      }
-    }
-    var f = file[fileIndex]
-    if (f === '.' || f === '..' ||
-        (!this.options.dot && f.charAt(0) === '.')) {
-      return false
-    }
-    fileIndex++
-  }
-  return partial || null
-}
-
-Minimatch.prototype._matchOne = function (file, pattern, partial, fileIndex, patternIndex) {
-  var fi, pi, fl, pl
-  for (
-    fi = fileIndex, pi = patternIndex, fl = file.length, pl = pattern.length
-    ; (fi < fl) && (pi < pl)
-    ; fi++, pi++
-  ) {
-    this.debug('matchOne loop')
-    var p = pattern[pi]
-    var f = file[fi]
-
-    this.debug(pattern, p, f)
-
-    // should be impossible.
-    // some invalid regexp stuff in the set.
-    /* istanbul ignore if */
-    if (p === false || p === GLOBSTAR) return false
-
-    // something other than **
-    // non-magic patterns just have to match exactly
-    // patterns with magic have been turned into regexps.
-    var hit
-    if (typeof p === 'string') {
-      hit = f === p
-      this.debug('string match', p, f, hit)
-    } else {
-      hit = f.match(p)
-      this.debug('pattern match', p, f, hit)
-    }
-
-    if (!hit) return false
-  }
-
-  // now either we fell off the end of the pattern, or we're done.
-  if (fi === fl && pi === pl) {
-    // ran out of pattern and filename at the same time.
-    // an exact hit!
-    return true
-  } else if (fi === fl) {
-    // ran out of file, but still had pattern left.
-    // this is ok if we're doing the match as part of
-    // a glob fs traversal.
-    return partial
-  } else /* istanbul ignore else */ if (pi === pl) {
-    // ran out of pattern, still have file left.
-    // this is only acceptable if we're on the very last
-    // empty segment of a file with a trailing slash.
-    // a/* should match a/b/
-    return (fi === fl - 1) && (file[fi] === '')
-  }
-
-  // should be unreachable.
-  /* istanbul ignore next */
-  throw new Error('wtf?')
-}
-
-// replace stuff like \* with *
-function globUnescape (s) {
-  return s.replace(/\\(.)/g, '$1')
-}
-
-function regExpEscape (s) {
-  return s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')
-}
-
-
-/***/ }),
-
 /***/ 4523:
 /***/ ((module) => {
 
@@ -8084,7 +7072,7 @@ class Range {
 
 module.exports = Range
 
-const LRU = __nccwpck_require__(7366)
+const LRU = __nccwpck_require__(4985)
 const cache = new LRU()
 
 const parseOptions = __nccwpck_require__(8183)
@@ -8975,14 +7963,14 @@ module.exports = compareBuild
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const compareLoose = (a, b) => compare(a, b, true)
 module.exports = compareLoose
 
 
 /***/ }),
 
-/***/ 676:
+/***/ 8295:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -9071,7 +8059,7 @@ module.exports = diff
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const eq = (a, b, loose) => compare(a, b, loose) === 0
 module.exports = eq
 
@@ -9084,7 +8072,7 @@ module.exports = eq
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const gt = (a, b, loose) => compare(a, b, loose) > 0
 module.exports = gt
 
@@ -9097,7 +8085,7 @@ module.exports = gt
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const gte = (a, b, loose) => compare(a, b, loose) >= 0
 module.exports = gte
 
@@ -9139,7 +8127,7 @@ module.exports = inc
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const lt = (a, b, loose) => compare(a, b, loose) < 0
 module.exports = lt
 
@@ -9152,7 +8140,7 @@ module.exports = lt
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const lte = (a, b, loose) => compare(a, b, loose) <= 0
 module.exports = lte
 
@@ -9191,7 +8179,7 @@ module.exports = minor
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const neq = (a, b, loose) => compare(a, b, loose) !== 0
 module.exports = neq
 
@@ -9259,7 +8247,7 @@ module.exports = prerelease
 "use strict";
 
 
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const rcompare = (a, b, loose) => compare(b, a, loose)
 module.exports = rcompare
 
@@ -9404,7 +8392,7 @@ const major = __nccwpck_require__(550)
 const minor = __nccwpck_require__(1362)
 const patch = __nccwpck_require__(9329)
 const prerelease = __nccwpck_require__(4989)
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 const rcompare = __nccwpck_require__(9358)
 const compareLoose = __nccwpck_require__(5135)
 const compareBuild = __nccwpck_require__(2097)
@@ -9586,7 +8574,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 7366:
+/***/ 4985:
 /***/ ((module) => {
 
 "use strict";
@@ -10177,7 +9165,7 @@ module.exports = outside
 // that includes the same versions that the original range does
 // If the original range is shorter than the simplified one, return that.
 const satisfies = __nccwpck_require__(2170)
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 module.exports = (versions, range, options) => {
   const set = []
   let first = null
@@ -10234,7 +9222,7 @@ const Range = __nccwpck_require__(4027)
 const Comparator = __nccwpck_require__(2980)
 const { ANY } = Comparator
 const satisfies = __nccwpck_require__(2170)
-const compare = __nccwpck_require__(676)
+const compare = __nccwpck_require__(8295)
 
 // Complex range `r1 || r2 || ...` is a subset of `R1 || R2 || ...` iff:
 // - Every simple range `r1, r2, ...` is a null set, OR
@@ -10961,40 +9949,40 @@ __webpack_unused_export__ = debug; // for test
 
 /***/ }),
 
-/***/ 8628:
+/***/ 9620:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 var __webpack_unused_export__;
 
 
-const Client = __nccwpck_require__(3681)
-const Dispatcher = __nccwpck_require__(1319)
-const Pool = __nccwpck_require__(2472)
-const BalancedPool = __nccwpck_require__(313)
-const RoundRobinPool = __nccwpck_require__(660)
-const Agent = __nccwpck_require__(1361)
-const Dispatcher1Wrapper = __nccwpck_require__(1846)
-const ProxyAgent = __nccwpck_require__(3652)
-const Socks5ProxyAgent = __nccwpck_require__(3387)
-const EnvHttpProxyAgent = __nccwpck_require__(2389)
-const RetryAgent = __nccwpck_require__(4046)
-const H2CClient = __nccwpck_require__(1123)
-const errors = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
+const Client = __nccwpck_require__(7057)
+const Dispatcher = __nccwpck_require__(4727)
+const Pool = __nccwpck_require__(5704)
+const BalancedPool = __nccwpck_require__(3225)
+const RoundRobinPool = __nccwpck_require__(1108)
+const Agent = __nccwpck_require__(3857)
+const Dispatcher1Wrapper = __nccwpck_require__(9830)
+const ProxyAgent = __nccwpck_require__(4836)
+const Socks5ProxyAgent = __nccwpck_require__(4475)
+const EnvHttpProxyAgent = __nccwpck_require__(1381)
+const RetryAgent = __nccwpck_require__(1854)
+const H2CClient = __nccwpck_require__(5795)
+const errors = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
 const { InvalidArgumentError } = errors
-const api = __nccwpck_require__(7299)
-const buildConnector = __nccwpck_require__(6132)
-const MockClient = __nccwpck_require__(4505)
-const { MockCallHistory, MockCallHistoryLog } = __nccwpck_require__(7819)
-const MockAgent = __nccwpck_require__(6905)
-const MockPool = __nccwpck_require__(7504)
-const SnapshotAgent = __nccwpck_require__(7147)
-const mockErrors = __nccwpck_require__(4737)
-const RetryHandler = __nccwpck_require__(1684)
-const { getGlobalDispatcher, setGlobalDispatcher } = __nccwpck_require__(1689)
-const DecoratorHandler = __nccwpck_require__(4335)
-const RedirectHandler = __nccwpck_require__(8102)
+const api = __nccwpck_require__(8147)
+const buildConnector = __nccwpck_require__(5140)
+const MockClient = __nccwpck_require__(5081)
+const { MockCallHistory, MockCallHistoryLog } = __nccwpck_require__(5307)
+const MockAgent = __nccwpck_require__(4377)
+const MockPool = __nccwpck_require__(5584)
+const SnapshotAgent = __nccwpck_require__(9448)
+const mockErrors = __nccwpck_require__(17)
+const RetryHandler = __nccwpck_require__(1972)
+const { getGlobalDispatcher, setGlobalDispatcher } = __nccwpck_require__(9145)
+const DecoratorHandler = __nccwpck_require__(9663)
+const RedirectHandler = __nccwpck_require__(2822)
 
 Object.assign(Dispatcher.prototype, api)
 
@@ -11015,21 +10003,21 @@ __webpack_unused_export__ = RetryHandler
 __webpack_unused_export__ = DecoratorHandler
 __webpack_unused_export__ = RedirectHandler
 __webpack_unused_export__ = {
-  redirect: __nccwpck_require__(2118),
-  responseError: __nccwpck_require__(3226),
-  retry: __nccwpck_require__(5630),
-  dump: __nccwpck_require__(3360),
-  dns: __nccwpck_require__(5023),
-  cache: __nccwpck_require__(3618),
-  decompress: __nccwpck_require__(2721),
-  deduplicate: __nccwpck_require__(7092)
+  redirect: __nccwpck_require__(7366),
+  responseError: __nccwpck_require__(4730),
+  retry: __nccwpck_require__(8350),
+  dump: __nccwpck_require__(8016),
+  dns: __nccwpck_require__(4319),
+  cache: __nccwpck_require__(5714),
+  decompress: __nccwpck_require__(9793),
+  deduplicate: __nccwpck_require__(1156)
 }
 
 __webpack_unused_export__ = {
-  MemoryCacheStore: __nccwpck_require__(1405)
+  MemoryCacheStore: __nccwpck_require__(125)
 }
 
-const SqliteCacheStore = __nccwpck_require__(3246)
+const SqliteCacheStore = __nccwpck_require__(590)
 __webpack_unused_export__ = SqliteCacheStore
 
 __webpack_unused_export__ = buildConnector
@@ -11091,7 +10079,7 @@ function makeDispatcher (fn) {
 __webpack_unused_export__ = setGlobalDispatcher
 __webpack_unused_export__ = getGlobalDispatcher
 
-const fetchImpl = (__nccwpck_require__(2986).fetch)
+const fetchImpl = (__nccwpck_require__(5498).fetch)
 
 // Capture __filename at module load time for stack trace augmentation.
 // This may be undefined when bundled in environments like Node.js internals.
@@ -11131,22 +10119,22 @@ module.exports.hd = function fetch (init, options = undefined) {
     throw err
   })
 }
-module.exports.Headers = __nccwpck_require__(912).Headers
-module.exports.Response = __nccwpck_require__(4263).Response
-module.exports.Request = __nccwpck_require__(3123).Request
-module.exports.FormData = __nccwpck_require__(1242).FormData
+module.exports.Headers = __nccwpck_require__(9008).Headers
+module.exports.Response = __nccwpck_require__(3751).Response
+module.exports.Request = __nccwpck_require__(355).Request
+module.exports.FormData = __nccwpck_require__(6762).FormData
 
-const { setGlobalOrigin, getGlobalOrigin } = __nccwpck_require__(8943)
+const { setGlobalOrigin, getGlobalOrigin } = __nccwpck_require__(5743)
 
 __webpack_unused_export__ = setGlobalOrigin
 __webpack_unused_export__ = getGlobalOrigin
 
-const { CacheStorage } = __nccwpck_require__(1633)
-const { kConstruct } = __nccwpck_require__(9087)
+const { CacheStorage } = __nccwpck_require__(2177)
+const { kConstruct } = __nccwpck_require__(3599)
 
 __webpack_unused_export__ = new CacheStorage(kConstruct)
 
-const { deleteCookie, getCookies, getSetCookies, setCookie, parseCookie } = __nccwpck_require__(3537)
+const { deleteCookie, getCookies, getSetCookies, setCookie, parseCookie } = __nccwpck_require__(2065)
 
 __webpack_unused_export__ = deleteCookie
 __webpack_unused_export__ = getCookies
@@ -11154,21 +10142,21 @@ __webpack_unused_export__ = getSetCookies
 __webpack_unused_export__ = setCookie
 __webpack_unused_export__ = parseCookie
 
-const { parseMIMEType, serializeAMimeType } = __nccwpck_require__(3200)
+const { parseMIMEType, serializeAMimeType } = __nccwpck_require__(8400)
 
 __webpack_unused_export__ = parseMIMEType
 __webpack_unused_export__ = serializeAMimeType
 
-const { CloseEvent, ErrorEvent, MessageEvent } = __nccwpck_require__(6344)
-const { WebSocket, ping } = __nccwpck_require__(4714)
+const { CloseEvent, ErrorEvent, MessageEvent } = __nccwpck_require__(1336)
+const { WebSocket, ping } = __nccwpck_require__(5930)
 module.exports.kb = WebSocket
 module.exports.rd = CloseEvent
 module.exports.NN = ErrorEvent
 module.exports.aM = MessageEvent
 __webpack_unused_export__ = ping
 
-/* unused reexport */ __nccwpck_require__(1189).WebSocketStream
-/* unused reexport */ __nccwpck_require__(4339).WebSocketError
+/* unused reexport */ __nccwpck_require__(4133).WebSocketStream
+/* unused reexport */ __nccwpck_require__(9363).WebSocketError
 
 __webpack_unused_export__ = makeDispatcher(api.request)
 __webpack_unused_export__ = makeDispatcher(api.stream)
@@ -11184,7 +10172,7 @@ __webpack_unused_export__ = MockAgent
 __webpack_unused_export__ = SnapshotAgent
 __webpack_unused_export__ = mockErrors
 
-const { EventSource } = __nccwpck_require__(578)
+const { EventSource } = __nccwpck_require__(6898)
 
 module.exports.GD = EventSource
 
@@ -11206,14 +10194,14 @@ __webpack_unused_export__ = install
 
 /***/ }),
 
-/***/ 2970:
+/***/ 7146:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { addAbortListener } = __nccwpck_require__(4108)
-const { RequestAbortedError } = __nccwpck_require__(39)
+const { addAbortListener } = __nccwpck_require__(6364)
+const { RequestAbortedError } = __nccwpck_require__(5767)
 
 const kListener = Symbol('kListener')
 const kSignal = Symbol('kSignal')
@@ -11273,7 +10261,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 7048:
+/***/ 3448:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -11281,9 +10269,9 @@ module.exports = {
 
 const assert = __nccwpck_require__(4589)
 const { AsyncResource } = __nccwpck_require__(6698)
-const { InvalidArgumentError, SocketError } = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { addSignal, removeSignal } = __nccwpck_require__(2970)
+const { InvalidArgumentError, SocketError } = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
+const { addSignal, removeSignal } = __nccwpck_require__(7146)
 
 class ConnectHandler extends AsyncResource {
   constructor (opts, callback) {
@@ -11393,7 +10381,7 @@ module.exports = connect
 
 /***/ }),
 
-/***/ 466:
+/***/ 7074:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -11410,10 +10398,10 @@ const {
   InvalidArgumentError,
   InvalidReturnValueError,
   RequestAbortedError
-} = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { kBodyUsed } = __nccwpck_require__(9087)
-const { addSignal, removeSignal } = __nccwpck_require__(2970)
+} = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
+const { kBodyUsed } = __nccwpck_require__(3599)
+const { addSignal, removeSignal } = __nccwpck_require__(7146)
 
 function noop () {}
 
@@ -11666,7 +10654,7 @@ module.exports = pipeline
 
 /***/ }),
 
-/***/ 9927:
+/***/ 5559:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -11674,9 +10662,9 @@ module.exports = pipeline
 
 const assert = __nccwpck_require__(4589)
 const { AsyncResource } = __nccwpck_require__(6698)
-const { Readable } = __nccwpck_require__(8675)
-const { InvalidArgumentError, RequestAbortedError } = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
+const { Readable } = __nccwpck_require__(1587)
+const { InvalidArgumentError, RequestAbortedError } = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
 
 function noop () {}
 
@@ -11918,7 +10906,7 @@ module.exports.RequestHandler = RequestHandler
 
 /***/ }),
 
-/***/ 6884:
+/***/ 9188:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -11926,9 +10914,9 @@ module.exports.RequestHandler = RequestHandler
 
 const assert = __nccwpck_require__(4589)
 const { AsyncResource } = __nccwpck_require__(6698)
-const { InvalidArgumentError, InvalidReturnValueError } = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { addSignal, removeSignal } = __nccwpck_require__(2970)
+const { InvalidArgumentError, InvalidReturnValueError } = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
+const { addSignal, removeSignal } = __nccwpck_require__(7146)
 
 function noop () {}
 
@@ -12196,18 +11184,18 @@ module.exports = stream
 
 /***/ }),
 
-/***/ 3254:
+/***/ 2214:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { InvalidArgumentError, SocketError } = __nccwpck_require__(39)
+const { InvalidArgumentError, SocketError } = __nccwpck_require__(5767)
 const { AsyncResource } = __nccwpck_require__(6698)
 const assert = __nccwpck_require__(4589)
-const util = __nccwpck_require__(4108)
-const { kHTTP2Stream } = __nccwpck_require__(9087)
-const { addSignal, removeSignal } = __nccwpck_require__(2970)
+const util = __nccwpck_require__(6364)
+const { kHTTP2Stream } = __nccwpck_require__(3599)
+const { addSignal, removeSignal } = __nccwpck_require__(7146)
 
 class UpgradeHandler extends AsyncResource {
   constructor (opts, callback) {
@@ -12325,22 +11313,22 @@ module.exports = upgrade
 
 /***/ }),
 
-/***/ 7299:
+/***/ 8147:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-module.exports.request = __nccwpck_require__(9927)
-module.exports.stream = __nccwpck_require__(6884)
-module.exports.pipeline = __nccwpck_require__(466)
-module.exports.upgrade = __nccwpck_require__(3254)
-module.exports.connect = __nccwpck_require__(7048)
+module.exports.request = __nccwpck_require__(5559)
+module.exports.stream = __nccwpck_require__(9188)
+module.exports.pipeline = __nccwpck_require__(7074)
+module.exports.upgrade = __nccwpck_require__(2214)
+module.exports.connect = __nccwpck_require__(3448)
 
 
 /***/ }),
 
-/***/ 8675:
+/***/ 1587:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -12349,9 +11337,8 @@ module.exports.connect = __nccwpck_require__(7048)
 const assert = __nccwpck_require__(4589)
 const { addAbortListener } = __nccwpck_require__(8474)
 const { Readable } = __nccwpck_require__(7075)
-const { RequestAbortedError, NotSupportedError, InvalidArgumentError, AbortError } = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { ReadableStreamFrom } = __nccwpck_require__(4108)
+const { RequestAbortedError, NotSupportedError, InvalidArgumentError, AbortError } = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
 
 const kConsume = Symbol('kConsume')
 const kReading = Symbol('kReading')
@@ -12592,7 +11579,7 @@ class BodyReadable extends Readable {
    */
   get body () {
     if (!this[kBody]) {
-      this[kBody] = ReadableStreamFrom(this)
+      this[kBody] = ReadableStream.from(this)
       if (this[kConsume]) {
         // TODO: Is this the best way to force a lock?
         this[kBody].getReader() // Ensure stream is locked.
@@ -12964,7 +11951,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1405:
+/***/ 125:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -12972,7 +11959,7 @@ module.exports = {
 
 const { Writable } = __nccwpck_require__(7075)
 const { EventEmitter } = __nccwpck_require__(8474)
-const { assertCacheKey, assertCacheValue } = __nccwpck_require__(7527)
+const { assertCacheKey, assertCacheValue } = __nccwpck_require__(3831)
 
 /**
  * @typedef {import('../../types/cache-interceptor.d.ts').default.CacheKey} CacheKey
@@ -13057,7 +12044,7 @@ class MemoryCacheStore extends EventEmitter {
   }
 
   /**
-   * @param {import('../../types/cache-interceptor.d.ts').default.CacheKey} req
+   * @param {import('../../types/cache-interceptor.d.ts').default.CacheKey} key
    * @returns {import('../../types/cache-interceptor.d.ts').default.GetResult | undefined}
    */
   get (key) {
@@ -13069,6 +12056,11 @@ class MemoryCacheStore extends EventEmitter {
     const entries = this.#entries.get(topLevelKey)
 
     const entry = entries ? findEntry(key, entries, now) : null
+
+    if (entry != null) {
+      this.#entries.delete(topLevelKey)
+      this.#entries.set(topLevelKey, entries)
+    }
 
     return entry == null
       ? undefined
@@ -13118,11 +12110,13 @@ class MemoryCacheStore extends EventEmitter {
       },
       final (callback) {
         let entries = store.#entries.get(topLevelKey)
-        if (!entries) {
+        if (entries) {
+          store.#entries.delete(topLevelKey)
+        } else {
           entries = []
-          store.#entries.set(topLevelKey, entries)
         }
-        const previousEntry = findEntry(key, entries, Date.now())
+        store.#entries.set(topLevelKey, entries)
+        const previousEntry = findEntry(key, entries, -Infinity)
         if (previousEntry) {
           const index = entries.indexOf(previousEntry)
           entries.splice(index, 1, entry)
@@ -13147,16 +12141,7 @@ class MemoryCacheStore extends EventEmitter {
             store.#hasEmittedMaxSizeEvent = true
           }
 
-          // Perform eviction
-          for (const [key, entries] of store.#entries) {
-            for (const entry of entries.splice(0, entries.length / 2)) {
-              store.#size -= entry.size
-              store.#count -= 1
-            }
-            if (entries.length === 0) {
-              store.#entries.delete(key)
-            }
-          }
+          store.#evict(entry)
 
           // Reset the event flag after eviction
           if (store.#size < store.#maxSize && store.#count < store.#maxCount) {
@@ -13167,6 +12152,43 @@ class MemoryCacheStore extends EventEmitter {
         callback(null)
       }
     })
+  }
+
+  #evict (keep) {
+    const targetSize = this.#maxSize / 2
+    const targetCount = this.#maxCount / 2
+
+    for (const [key, entries] of this.#entries) {
+      for (let i = 0; i < entries.length && (this.#size > targetSize || this.#count > targetCount);) {
+        const entry = entries[i]
+        if (entry === keep) {
+          i++
+          continue
+        }
+        entries.splice(i, 1)
+        this.#size -= entry.size
+        this.#count -= 1
+      }
+
+      if (entries.length === 0) {
+        this.#entries.delete(key)
+      }
+
+      if (this.#size <= targetSize && this.#count <= targetCount) {
+        return
+      }
+    }
+
+    if (this.#size > this.#maxSize || this.#count > this.#maxCount) {
+      const topLevelKey = `${keep.origin}:${keep.path}`
+      const entries = this.#entries.get(topLevelKey)
+      entries.splice(entries.indexOf(keep), 1)
+      this.#size -= keep.size
+      this.#count -= 1
+      if (entries.length === 0) {
+        this.#entries.delete(topLevelKey)
+      }
+    }
   }
 
   /**
@@ -13251,21 +12273,29 @@ module.exports = MemoryCacheStore
 
 /***/ }),
 
-/***/ 3246:
+/***/ 590:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { Writable } = __nccwpck_require__(7075)
-const { assertCacheKey, assertCacheValue } = __nccwpck_require__(7527)
+const { assertCacheKey, assertCacheValue } = __nccwpck_require__(3831)
+const { zstdCompressSync, zstdDecompressSync } = __nccwpck_require__(8522)
 
 let DatabaseSync
 
-const VERSION = 3
+const VERSION = 4
 
 // 2gb
 const MAX_ENTRY_SIZE = 2 * 1000 * 1000 * 1000
+
+// 1MiB
+const COMPRESS_THRESHOLD = 1024 * 1024
+
+// zstd support landed in Node 22.19.0/23.4.0, so it may be missing even when
+// node:sqlite is available.
+const hasZstd = typeof zstdCompressSync === 'function' && typeof zstdDecompressSync === 'function'
 
 /**
  * @typedef {import('../../types/cache-interceptor.d.ts').default.CacheStore} CacheStore
@@ -13274,6 +12304,7 @@ const MAX_ENTRY_SIZE = 2 * 1000 * 1000 * 1000
  * @typedef {{
  *  id: Readonly<number>,
  *  body?: Uint8Array
+ *  compressed?: string
  *  statusCode: number
  *  statusMessage: string
  *  headers?: string
@@ -13288,6 +12319,7 @@ const MAX_ENTRY_SIZE = 2 * 1000 * 1000 * 1000
 module.exports = class SqliteCacheStore {
   #maxEntrySize = MAX_ENTRY_SIZE
   #maxCount = Infinity
+  #compressThreshold = COMPRESS_THRESHOLD
 
   /**
    * @type {import('node:sqlite').DatabaseSync}
@@ -13364,6 +12396,17 @@ module.exports = class SqliteCacheStore {
         }
         this.#maxCount = opts.maxCount
       }
+
+      if (opts.compressThreshold !== undefined) {
+        if (
+          typeof opts.compressThreshold !== 'number' ||
+          !Number.isInteger(opts.compressThreshold) ||
+          opts.compressThreshold < 0
+        ) {
+          throw new TypeError('SqliteCacheStore options.compressThreshold must be a non-negative integer')
+        }
+        this.#compressThreshold = opts.compressThreshold
+      }
     }
 
     if (!DatabaseSync) {
@@ -13385,6 +12428,7 @@ module.exports = class SqliteCacheStore {
 
         -- Data returned to the interceptor
         body BUF NULL,
+        compressed TEXT NULL,
         deleteAt INTEGER NOT NULL,
         statusCode INTEGER NOT NULL,
         statusMessage TEXT NOT NULL,
@@ -13404,6 +12448,7 @@ module.exports = class SqliteCacheStore {
       SELECT
         id,
         body,
+        compressed,
         deleteAt,
         statusCode,
         statusMessage,
@@ -13424,6 +12469,7 @@ module.exports = class SqliteCacheStore {
     this.#updateValueQuery = this.#db.prepare(`
       UPDATE cacheInterceptorV${VERSION} SET
         body = ?,
+        compressed = ?,
         deleteAt = ?,
         statusCode = ?,
         statusMessage = ?,
@@ -13442,6 +12488,7 @@ module.exports = class SqliteCacheStore {
         url,
         method,
         body,
+        compressed,
         deleteAt,
         statusCode,
         statusMessage,
@@ -13451,7 +12498,7 @@ module.exports = class SqliteCacheStore {
         vary,
         cachedAt,
         staleAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     this.#deleteByUrlQuery = this.#db.prepare(
@@ -13494,7 +12541,11 @@ module.exports = class SqliteCacheStore {
     const value = this.#findValue(key)
     return value
       ? {
-          body: value.body ? Buffer.from(value.body.buffer, value.body.byteOffset, value.body.byteLength) : undefined,
+          body: value.body
+            ? value.compressed === 'zstd'
+              ? zstdDecompressSync(Buffer.from(value.body.buffer, value.body.byteOffset, value.body.byteLength))
+              : Buffer.from(value.body.buffer, value.body.byteOffset, value.body.byteLength)
+            : undefined,
           statusCode: value.statusCode,
           statusMessage: value.statusMessage,
           headers: value.headers ? JSON.parse(value.headers) : undefined,
@@ -13525,11 +12576,22 @@ module.exports = class SqliteCacheStore {
       return
     }
 
+    let compressed = null
+    let storedBody = body
+    if (body && hasZstd && (size > this.#compressThreshold || isCompressibleContentType(getContentType(value.headers)))) {
+      const candidate = zstdCompressSync(body)
+      if (candidate.byteLength < body.byteLength) {
+        storedBody = candidate
+        compressed = 'zstd'
+      }
+    }
+
     const existingValue = this.#findValue(key, true)
     if (existingValue) {
       // Updating an existing response, let's overwrite it
       this.#updateValueQuery.run(
-        body,
+        storedBody,
+        compressed,
         value.deleteAt,
         value.statusCode,
         value.statusMessage,
@@ -13546,7 +12608,8 @@ module.exports = class SqliteCacheStore {
       this.#insertValueQuery.run(
         url,
         key.method,
-        body,
+        storedBody,
+        compressed,
         value.deleteAt,
         value.statusCode,
         value.statusMessage,
@@ -13725,10 +12788,47 @@ function headerValueEquals (lhs, rhs) {
   return lhs === rhs
 }
 
+/**
+ * @param {Record<string, string|string[]>|null|undefined} headers
+ * @returns {string|undefined}
+ */
+function getContentType (headers) {
+  if (headers == null) {
+    return undefined
+  }
+
+  for (const key in headers) {
+    if (key.toLowerCase() === 'content-type') {
+      const value = headers[key]
+      return Array.isArray(value) ? value[0] : value
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * @param {string|undefined} contentType
+ * @returns {boolean}
+ */
+function isCompressibleContentType (contentType) {
+  if (contentType == null) {
+    return false
+  }
+
+  const type = contentType.toLowerCase()
+
+  // text/* and application/json, xml, javascript, ... are easily compressible
+  // even at smaller sizes, so ignore the compressThreshold for them.
+  return /^text\//.test(type) ||
+    /^application\/(json|xml|javascript|x-www-form-urlencoded|graphql)(\s|;|$)/.test(type) ||
+    /\+(json|xml)(\s|;|$)/.test(type)
+}
+
 
 /***/ }),
 
-/***/ 6132:
+/***/ 5140:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -13736,8 +12836,8 @@ function headerValueEquals (lhs, rhs) {
 
 const net = __nccwpck_require__(7030)
 const assert = __nccwpck_require__(4589)
-const util = __nccwpck_require__(4108)
-const { InvalidArgumentError, ConnectTimeoutError } = __nccwpck_require__(39)
+const util = __nccwpck_require__(6364)
+const { InvalidArgumentError, ConnectTimeoutError } = __nccwpck_require__(5767)
 
 let tls // include tls conditionally since it is not always available
 
@@ -13775,16 +12875,22 @@ const SessionCache = class WeakSessionCache {
     if (this._sessionCache.has(sessionKey)) {
       this._sessionCache.delete(sessionKey)
     } else if (this._sessionCache.size >= this._maxCachedSessions) {
+      // Make room for the new session: prefer an entry whose session has
+      // already been collected, otherwise evict the oldest one.
+      let evicted = false
       for (const [key, ref] of this._sessionCache) {
         if (ref.deref() === undefined) {
           this._sessionCache.delete(key)
-          return
+          evicted = true
+          break
         }
       }
 
-      const oldest = this._sessionCache.keys().next()
-      if (!oldest.done) {
-        this._sessionCache.delete(oldest.value)
+      if (!evicted) {
+        const oldest = this._sessionCache.keys().next()
+        if (!oldest.done) {
+          this._sessionCache.delete(oldest.value)
+        }
       }
     }
 
@@ -13928,7 +13034,7 @@ module.exports = buildConnector
 
 /***/ }),
 
-/***/ 7363:
+/***/ 2531:
 /***/ ((module) => {
 
 "use strict";
@@ -14048,15 +13154,26 @@ for (let i = 0; i < wellknownHeaderNames.length; ++i) {
     lowerCasedKey
 }
 
+/**
+ * Default WebSocket receive limits (see `webSocket` in Client.md). Used by
+ * DispatcherBase#webSocketOptions and by the WebSocket parser when the
+ * dispatcher doesn't provide a value, so a dispatcher without
+ * `webSocketOptions` (a custom one, or a wrapper) doesn't remove the limits.
+ */
+const defaultWebSocketMaxFragments = 131072
+const defaultWebSocketMaxPayloadSize = 128 * 1024 * 1024 // 128 MB
+
 module.exports = {
   wellknownHeaderNames,
-  headerNameLowerCasedRecord
+  headerNameLowerCasedRecord,
+  defaultWebSocketMaxFragments,
+  defaultWebSocketMaxPayloadSize
 }
 
 
 /***/ }),
 
-/***/ 7170:
+/***/ 3906:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -14291,7 +13408,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 39:
+/***/ 5767:
 /***/ ((module) => {
 
 "use strict";
@@ -14603,6 +13720,22 @@ class BalancedPoolMissingUpstreamError extends UndiciError {
   }
 }
 
+const kWebAssemblyNotSupportedError = Symbol.for('undici.error.ERR_WEBASSEMBLY_NOT_SUPPORTED')
+class WebAssemblyNotSupportedError extends Error {
+  constructor (message) {
+    super(message || 'WebAssembly is not supported in this environment, but is required for HTTP/1 parsing')
+    this.code = 'ERR_WEBASSEMBLY_NOT_SUPPORTED'
+  }
+
+  static [Symbol.hasInstance] (instance) {
+    return instance && instance[kWebAssemblyNotSupportedError] === true
+  }
+
+  get [kWebAssemblyNotSupportedError] () {
+    return true
+  }
+}
+
 const kHTTPParserError = Symbol.for('undici.error.UND_ERR_HTTP_PARSER')
 class HTTPParserError extends Error {
   constructor (message, code, data) {
@@ -14662,13 +13795,14 @@ class RequestRetryError extends UndiciError {
 
 const kResponseError = Symbol.for('undici.error.UND_ERR_RESPONSE')
 class ResponseError extends UndiciError {
-  constructor (message, code, { headers, body }) {
+  constructor (message, code, { headers, body, bodyTruncated = false }) {
     super(message)
     this.name = 'ResponseError'
     this.message = message || 'Response error'
     this.code = 'UND_ERR_RESPONSE'
     this.statusCode = code
     this.body = body
+    this.bodyTruncated = bodyTruncated
     this.headers = headers
   }
 
@@ -14715,6 +13849,24 @@ class ProxyConnectionError extends UndiciError {
   }
 
   get [kProxyConnectionError] () {
+    return true
+  }
+}
+
+const kMaxRedirectsError = Symbol.for('undici.error.UND_ERR_REDIRECT_MAX')
+class MaxRedirectsError extends UndiciError {
+  constructor (message) {
+    super(message)
+    this.name = 'MaxRedirectsError'
+    this.message = message || 'max redirects'
+    this.code = 'UND_ERR_REDIRECT_MAX'
+  }
+
+  static [Symbol.hasInstance] (instance) {
+    return instance && instance[kMaxRedirectsError] === true
+  }
+
+  get [kMaxRedirectsError] () {
     return true
   }
 }
@@ -14766,6 +13918,7 @@ class MessageSizeExceededError extends UndiciError {
 
 module.exports = {
   AbortError,
+  WebAssemblyNotSupportedError,
   HTTPParserError,
   UndiciError,
   HeadersTimeoutError,
@@ -14789,6 +13942,7 @@ module.exports = {
   SecureProxyConnectionError,
   ProxyConnectionError,
   MaxOriginsReachedError,
+  MaxRedirectsError,
   Socks5ProxyError,
   MessageSizeExceededError
 }
@@ -14796,7 +13950,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1867:
+/***/ 7339:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -14805,7 +13959,7 @@ module.exports = {
 const {
   InvalidArgumentError,
   NotSupportedError
-} = __nccwpck_require__(39)
+} = __nccwpck_require__(5767)
 const assert = __nccwpck_require__(4589)
 const {
   isValidHTTPToken,
@@ -14823,9 +13977,9 @@ const {
   getServerName,
   normalizedMethodRecords,
   getProtocolFromUrlString
-} = __nccwpck_require__(4108)
-const { channels } = __nccwpck_require__(7170)
-const { headerNameLowerCasedRecord } = __nccwpck_require__(7363)
+} = __nccwpck_require__(6364)
+const { channels } = __nccwpck_require__(3906)
+const { headerNameLowerCasedRecord } = __nccwpck_require__(2531)
 
 // Verifies that a given path is valid does not contain control chars \x00 to \x20
 const invalidPathRegex = /[^\u0021-\u00ff]/
@@ -15008,7 +14162,12 @@ class Request {
       this.body = body.byteLength ? Buffer.from(body) : null
     } else if (typeof body === 'string') {
       this.body = body.length ? Buffer.from(body) : null
-    } else if (isFormDataLike(body) || isIterable(body) || isBlobLike(body)) {
+    } else if (isFormDataLike(body)) {
+      if (!isUndiciFormData(body)) {
+        throw new InvalidArgumentError('body must be a FormData created by this undici package instance; FormData from other sources, such as the built-in FormData provided by Node.js, is not supported')
+      }
+      this.body = body
+    } else if (isIterable(body) || isBlobLike(body)) {
       this.body = body
     } else {
       throw new InvalidArgumentError('body must be a string, a Buffer, a Readable stream, an iterable, or an async iterable')
@@ -15170,9 +14329,21 @@ class Request {
     }
   }
 
-  onRequestUpgrade (statusCode, headers, socket) {
+  /**
+   * @param {number} statusCode
+   * @param {Buffer[]|string[]|import('../../types/header.d.ts').IncomingHttpHeaders} headers
+   * @param {import('node:stream').Duplex} socket
+   * @param {string} [statusText]
+   */
+  onRequestUpgrade (statusCode, headers, socket, statusText = '') {
+    this.onFinally()
+
     assert(!this.aborted)
     assert(!this.completed)
+
+    if (channels.headers.hasSubscribers) {
+      channels.headers.publish({ request: this, response: { statusCode, headers, statusText } })
+    }
 
     const controller = this[kController]
     if (controller) {
@@ -15181,7 +14352,16 @@ class Request {
 
     const parsedHeaders = Array.isArray(headers) ? parseHeaders(headers) : headers
 
-    return this[kHandler].onRequestUpgrade?.(controller, statusCode, parsedHeaders, socket)
+    const result = this[kHandler].onRequestUpgrade?.(controller, statusCode, parsedHeaders, socket)
+
+    if (!this.aborted) {
+      this.completed = true
+      if (channels.trailers.hasSubscribers) {
+        channels.trailers.publish({ request: this, trailers: [] })
+      }
+    }
+
+    return result
   }
 
   onResponseEnd (trailers) {
@@ -15345,12 +14525,22 @@ function processHeader (request, key, val) {
   }
 }
 
+let isFormData
+
+function isUndiciFormData (body) {
+  if (isFormData === undefined) {
+    __nccwpck_require__(6762)
+    isFormData = (__nccwpck_require__(4483).webidl).is.FormData
+  }
+  return isFormData(body)
+}
+
 module.exports = Request
 
 
 /***/ }),
 
-/***/ 4598:
+/***/ 9606:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -15358,9 +14548,9 @@ module.exports = Request
 
 const { EventEmitter } = __nccwpck_require__(8474)
 const { Buffer } = __nccwpck_require__(4573)
-const { InvalidArgumentError, Socks5ProxyError } = __nccwpck_require__(39)
+const { InvalidArgumentError, Socks5ProxyError } = __nccwpck_require__(5767)
 const { debuglog } = __nccwpck_require__(7975)
-const { parseAddress } = __nccwpck_require__(2952)
+const { parseAddress } = __nccwpck_require__(440)
 
 const debug = debuglog('undici:socks5')
 const EMPTY_BUFFER = Buffer.alloc(0)
@@ -15780,7 +14970,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 2952:
+/***/ 440:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -15788,7 +14978,7 @@ module.exports = {
 
 const { Buffer } = __nccwpck_require__(4573)
 const net = __nccwpck_require__(7030)
-const { InvalidArgumentError } = __nccwpck_require__(39)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
 
 /**
  * Parse an address and determine its type
@@ -16000,7 +15190,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 9087:
+/***/ 3599:
 /***/ ((module) => {
 
 "use strict";
@@ -16011,6 +15201,9 @@ module.exports = {
   kDestroy: Symbol('destroy'),
   kDispatch: Symbol('dispatch'),
   kUrl: Symbol('url'),
+  kRequestOrigin: Symbol('request origin'),
+  kRedirectCacheControl: Symbol('redirect cache control'),
+  kOriginless: Symbol('originless'),
   kWriting: Symbol('writing'),
   kResuming: Symbol('resuming'),
   kQueue: Symbol('queue'),
@@ -16076,6 +15269,7 @@ module.exports = {
   kRemoteSettings: Symbol('http2session remote settings'),
   kHTTP2Stream: Symbol('http2session client stream'),
   kPingInterval: Symbol('ping interval'),
+  kUseMilo: Symbol('use milo'),
   kNoProxyAgent: Symbol('no proxy agent'),
   kHttpProxyAgent: Symbol('http proxy agent'),
   kHttpsProxyAgent: Symbol('https proxy agent'),
@@ -16085,7 +15279,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 5652:
+/***/ 7668:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -16094,7 +15288,7 @@ module.exports = {
 const {
   wellknownHeaderNames,
   headerNameLowerCasedRecord
-} = __nccwpck_require__(7363)
+} = __nccwpck_require__(2531)
 
 class TstNode {
   /** @type {any} */
@@ -16253,23 +15447,23 @@ module.exports = {
 
 /***/ }),
 
-/***/ 4108:
+/***/ 6364:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const assert = __nccwpck_require__(4589)
-const { kDestroyed, kBodyUsed, kListeners, kBody } = __nccwpck_require__(9087)
+const { kDestroyed, kBodyUsed, kListeners, kBody } = __nccwpck_require__(3599)
 const { IncomingMessage } = __nccwpck_require__(7067)
 const stream = __nccwpck_require__(7075)
 const net = __nccwpck_require__(7030)
 const { stringify } = __nccwpck_require__(1792)
 const { EventEmitter: EE, addAbortListener: addAbortListenerNative } = __nccwpck_require__(8474)
-const timers = __nccwpck_require__(9695)
-const { InvalidArgumentError, ConnectTimeoutError } = __nccwpck_require__(39)
-const { headerNameLowerCasedRecord } = __nccwpck_require__(7363)
-const { tree } = __nccwpck_require__(5652)
+const timers = __nccwpck_require__(3999)
+const { InvalidArgumentError, ConnectTimeoutError } = __nccwpck_require__(5767)
+const { headerNameLowerCasedRecord } = __nccwpck_require__(2531)
+const { tree } = __nccwpck_require__(7668)
 
 class BodyAsyncIterable {
   constructor (body) {
@@ -16646,7 +15840,7 @@ function destroy (stream, err) {
   }
 }
 
-const KEEPALIVE_TIMEOUT_EXPR = /timeout=(\d+)/
+const KEEPALIVE_TIMEOUT_EXPR = /(?:^|,)[\t ]*timeout=(\d+)/i
 /**
  * @param {string} val
  * @returns {number | null}
@@ -16674,6 +15868,30 @@ function headerNameToString (value) {
  */
 function bufferToLowerCasedHeaderName (value) {
   return tree.lookup(value) ?? value.toString('latin1').toLowerCase()
+}
+
+/**
+ * Writes a header onto a plain object without going through the
+ * `Object.prototype` `__proto__` setter. Plain assignment there drops a string
+ * value and, when the value is an array, replaces the object's prototype
+ * instead of storing anything. Every other name is a normal assignment.
+ *
+ * @param {Record<string, string | string[]>} obj Accumulator to write onto
+ * @param {string} key Header name
+ * @param {string | string[]} value Header value
+ * @returns {void}
+ */
+function setHeader (obj, key, value) {
+  if (key === '__proto__') {
+    Object.defineProperty(obj, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    })
+  } else {
+    obj[key] = value
+  }
 }
 
 /**
@@ -16901,44 +16119,6 @@ function getSocketInfo (socket) {
     bytesWritten: socket.bytesWritten,
     bytesRead: socket.bytesRead
   }
-}
-
-/**
- * @param {Iterable} iterable
- * @returns {ReadableStream}
- */
-function ReadableStreamFrom (iterable) {
-  // We cannot use ReadableStream.from here because it does not return a byte stream.
-
-  let iterator
-  return new ReadableStream(
-    {
-      start () {
-        iterator = iterable[Symbol.asyncIterator]()
-      },
-      pull (controller) {
-        return iterator.next().then(({ done, value }) => {
-          if (done) {
-            return queueMicrotask(() => {
-              controller.close()
-              controller.byobRequest?.respond(0)
-            })
-          } else {
-            const buf = Buffer.isBuffer(value) ? value : Buffer.from(value)
-            if (buf.byteLength) {
-              return controller.enqueue(new Uint8Array(buf))
-            } else {
-              return this.pull(controller)
-            }
-          }
-        })
-      },
-      cancel () {
-        return iterator.return()
-      },
-      type: 'bytes'
-    }
-  )
 }
 
 /**
@@ -17281,11 +16461,11 @@ module.exports = {
   toRawHeaders,
   encodeRawHeaders,
   parseHeaders,
+  setHeader,
   parseKeepAliveTimeout,
   destroy,
   bodyLength,
   deepClone,
-  ReadableStreamFrom,
   isBuffer,
   assertRequestHandler,
   getSocketInfo,
@@ -17310,18 +16490,18 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1361:
+/***/ 3857:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { InvalidArgumentError, MaxOriginsReachedError } = __nccwpck_require__(39)
-const { kBusy, kClients, kConnected, kRunning, kClose, kDestroy, kDispatch, kUrl } = __nccwpck_require__(9087)
-const DispatcherBase = __nccwpck_require__(4717)
-const Pool = __nccwpck_require__(2472)
-const Client = __nccwpck_require__(3681)
-const util = __nccwpck_require__(4108)
+const { InvalidArgumentError, MaxOriginsReachedError } = __nccwpck_require__(5767)
+const { kBusy, kClients, kConnected, kRunning, kPending, kClose, kDestroy, kDispatch, kUrl } = __nccwpck_require__(3599)
+const DispatcherBase = __nccwpck_require__(1949)
+const Pool = __nccwpck_require__(5704)
+const Client = __nccwpck_require__(7057)
+const util = __nccwpck_require__(6364)
 
 const kOnConnect = Symbol('onConnect')
 const kOnDisconnect = Symbol('onDisconnect')
@@ -17338,7 +16518,7 @@ function defaultFactory (origin, opts) {
 }
 
 class Agent extends DispatcherBase {
-  constructor ({ factory = defaultFactory, maxOrigins = Infinity, connect, ...options } = {}) {
+  constructor ({ factory = defaultFactory, maxOrigins = Infinity, connect, tls, ...options } = {}) {
     if (typeof factory !== 'function') {
       throw new InvalidArgumentError('factory must be a function.')
     }
@@ -17357,7 +16537,11 @@ class Agent extends DispatcherBase {
       connect = { ...connect }
     }
 
-    this[kOptions] = { ...util.deepClone(options), maxOrigins, connect }
+    if (tls && typeof tls !== 'function') {
+      tls = { ...tls }
+    }
+
+    this[kOptions] = { ...util.deepClone(options), maxOrigins, connect, tls }
     this[kFactory] = factory
     this[kClients] = new Map()
     this[kOrigins] = new Set()
@@ -17413,7 +16597,12 @@ class Agent extends DispatcherBase {
           return
         }
 
-        if (dispatcher[kConnected] > 0 || dispatcher[kBusy]) {
+        // A GOAWAY detaches the HTTP/2 session before requeued requests are
+        // dispatched on a replacement connection. At that point the pool has
+        // no connected clients and is not busy, but it still has pending work.
+        // Closing it here lets the replacement Client finish those requests
+        // and then destroys that new connection with ClientDestroyedError.
+        if (dispatcher[kConnected] > 0 || dispatcher[kBusy] || dispatcher[kPending] > 0) {
           return
         }
 
@@ -17490,7 +16679,7 @@ module.exports = Agent
 
 /***/ }),
 
-/***/ 313:
+/***/ 3225:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -17499,7 +16688,7 @@ module.exports = Agent
 const {
   BalancedPoolMissingUpstreamError,
   InvalidArgumentError
-} = __nccwpck_require__(39)
+} = __nccwpck_require__(5767)
 const {
   PoolBase,
   kClients,
@@ -17507,10 +16696,10 @@ const {
   kAddClient,
   kRemoveClient,
   kGetDispatcher
-} = __nccwpck_require__(7852)
-const Pool = __nccwpck_require__(2472)
-const { kUrl } = __nccwpck_require__(9087)
-const util = __nccwpck_require__(4108)
+} = __nccwpck_require__(2860)
+const Pool = __nccwpck_require__(5704)
+const { kOriginless, kUrl } = __nccwpck_require__(3599)
+const util = __nccwpck_require__(6364)
 const kFactory = Symbol('factory')
 
 const kOptions = Symbol('options')
@@ -17545,14 +16734,17 @@ function defaultFactory (origin, opts) {
 }
 
 class BalancedPool extends PoolBase {
-  constructor (upstreams = [], { factory = defaultFactory, ...opts } = {}) {
+  constructor (upstreams = [], { factory = defaultFactory, connect, tls, ...opts } = {}) {
     if (typeof factory !== 'function') {
       throw new InvalidArgumentError('factory must be a function.')
     }
 
-    super()
+    super(opts)
 
-    this[kOptions] = { ...util.deepClone(opts) }
+    this[kOriginless] = true
+    if (connect && typeof connect !== 'function') connect = { ...connect }
+    if (tls && typeof tls !== 'function') tls = { ...tls }
+    this[kOptions] = { ...util.deepClone(opts), connect, tls }
     this[kIndex] = -1
     this[kCurrentWeight] = 0
 
@@ -17712,7 +16904,7 @@ module.exports = BalancedPool
 
 /***/ }),
 
-/***/ 8377:
+/***/ 7145:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -17721,9 +16913,9 @@ module.exports = BalancedPool
 /* global WebAssembly */
 
 const assert = __nccwpck_require__(4589)
-const util = __nccwpck_require__(4108)
-const { channels } = __nccwpck_require__(7170)
-const timers = __nccwpck_require__(9695)
+const util = __nccwpck_require__(6364)
+const { channels } = __nccwpck_require__(3906)
+const timers = __nccwpck_require__(3999)
 const {
   RequestContentLengthMismatchError,
   ResponseContentLengthMismatchError,
@@ -17735,8 +16927,9 @@ const {
   InformationalError,
   BodyTimeoutError,
   HTTPParserError,
+  WebAssemblyNotSupportedError,
   ResponseExceededMaxSizeError
-} = __nccwpck_require__(39)
+} = __nccwpck_require__(5767)
 const {
   kUrl,
   kReset,
@@ -17769,10 +16962,15 @@ const {
   kOnError,
   kResume,
   kHTTPContext,
-  kClosed
-} = __nccwpck_require__(9087)
+  kClosed,
+  kUseMilo
+} = __nccwpck_require__(3599)
 
-const constants = __nccwpck_require__(3292)
+const constants = __nccwpck_require__(7932)
+// Node.js core bundles only llhttp; experimental Milo remains available in npm builds.
+const { H1Parser, getMiloEnabled } = typeof esbuildDetection === 'undefined'
+  ? __nccwpck_require__(6997)
+  : {}
 const EMPTY_BUF = Buffer.alloc(0)
 const FastBuffer = Buffer[Symbol.species]
 const removeAllListeners = util.removeAllListeners
@@ -17784,12 +16982,23 @@ const kTypeOfService = Symbol('kTypeOfService')
 let extractBody
 
 function lazyllhttp () {
-  const llhttpWasmData = process.env.JEST_WORKER_ID ? __nccwpck_require__(274) : undefined
+  // Check only when HTTP/1 needs the parser, so other APIs remain usable without WASM.
+  if (typeof WebAssembly === 'undefined') {
+    throw new WebAssemblyNotSupportedError()
+  }
+
+  const llhttpWasmData = process.env.JEST_WORKER_ID ? __nccwpck_require__(8610) : undefined
 
   let mod
 
-  // We disable wasm SIMD on ppc64 as it seems to be broken on Power 9 architectures.
-  let useWasmSIMD = process.arch !== 'ppc64'
+  // We disable wasm SIMD on older versions of Node.js on ppc64 that are broken on Power >=9 architectures.
+  let useWasmSIMD = true
+  if (process.arch === 'ppc64') {
+    const [major, minor] = process.versions.node.split('.').map(n => parseInt(n, 10))
+    if (major < 24 || (major === 24 && minor < 12)) {
+      useWasmSIMD = false
+    }
+  }
   // The Env Variable UNDICI_NO_WASM_SIMD allows explicitly overriding the default behavior
   if (process.env.UNDICI_NO_WASM_SIMD === '1') {
     useWasmSIMD = false
@@ -17799,9 +17008,8 @@ function lazyllhttp () {
 
   if (useWasmSIMD) {
     try {
-      mod = new WebAssembly.Module(__nccwpck_require__(286))
-    } catch {
-    }
+      mod = new WebAssembly.Module(__nccwpck_require__(766))
+    } catch {}
   }
 
   if (!mod) {
@@ -17809,7 +17017,7 @@ function lazyllhttp () {
     // being enabled, but the occurring of this other error
     // * https://github.com/emscripten-core/emscripten/issues/11495
     // got me to remove that check to avoid breaking Node 12.
-    mod = new WebAssembly.Module(llhttpWasmData || __nccwpck_require__(274))
+    mod = new WebAssembly.Module(llhttpWasmData || __nccwpck_require__(8610))
   }
 
   return new WebAssembly.Instance(mod, {
@@ -17838,7 +17046,7 @@ function lazyllhttp () {
        * @param {number} p
        * @returns {number}
        */
-      wasm_on_message_begin: (p) => {
+      wasm_on_message_begin: p => {
         assert(currentParser.ptr === p)
         return currentParser.onMessageBegin()
       },
@@ -17890,11 +17098,10 @@ function lazyllhttp () {
        * @param {number} p
        * @returns {number}
        */
-      wasm_on_message_complete: (p) => {
+      wasm_on_message_complete: p => {
         assert(currentParser.ptr === p)
         return currentParser.onMessageComplete()
       }
-
     }
   })
 }
@@ -17927,10 +17134,10 @@ const TIMEOUT_KEEP_ALIVE = 8 | USE_NATIVE_TIMER
 
 class Parser {
   /**
-     * @param {import('./client.js')} client
-     * @param {import('net').Socket} socket
-     * @param {*} llhttp
-     */
+   * @param {import('./client.js')} client
+   * @param {import('net').Socket} socket
+   * @param {*} llhttp
+   */
   constructor (client, socket, { exports }) {
     this.llhttp = exports
     this.ptr = this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE)
@@ -17957,7 +17164,8 @@ class Parser {
 
     this.keepAlive = ''
     this.contentLength = -1
-    this.connectionKeepAlive = false
+    this.hasTransferEncoding = false
+    this.connection = ''
     this.maxResponseSize = client[kMaxResponseSize]
   }
 
@@ -17965,10 +17173,7 @@ class Parser {
     // If the existing timer and the new timer are of different timer type
     // (fast or native) or have different delay, we need to clear the existing
     // timer and set a new one.
-    if (
-      delay !== this.timeoutValue ||
-      (type & USE_FAST_TIMER) ^ (this.timeoutType & USE_FAST_TIMER)
-    ) {
+    if (delay !== this.timeoutValue || (type & USE_FAST_TIMER) ^ (this.timeoutType & USE_FAST_TIMER)) {
       // If a timeout is already set, clear it with clearTimeout of the fast
       // timer implementation, as it can clear fast and native timers.
       if (this.timeout) {
@@ -18153,9 +17358,7 @@ class Parser {
     if (ptr) {
       const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0)
       message =
-        'Response does not match the HTTP/1.1 protocol (' +
-        Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
-        ')'
+        'Response does not match the HTTP/1.1 protocol (' + Buffer.from(llhttp.memory.buffer, ptr, len).toString() + ')'
     }
 
     return new HTTPParserError(message, constants.ERROR[ret], data)
@@ -18233,6 +17436,7 @@ class Parser {
    */
   onHeaderValue (buf) {
     let len = this.headers.length
+    const isContinuation = (len & 1) === 0
 
     if ((len & 1) === 1) {
       this.headers.push(buf)
@@ -18245,19 +17449,19 @@ class Parser {
     if (key.length === 10) {
       const headerName = util.bufferToLowerCasedHeaderName(key)
       if (headerName === 'keep-alive') {
-        this.keepAlive += buf.toString()
+        this.keepAlive += (isContinuation || this.keepAlive.length === 0 ? '' : ',') + buf.toString()
       } else if (headerName === 'connection') {
-        this.connectionKeepAlive =
-          this.headers[len - 1].length === 10 &&
-          util.bufferToLowerCasedHeaderName(this.headers[len - 1]) === 'keep-alive'
+        this.connection += (isContinuation || this.connection.length === 0 ? '' : ',') + buf.toString()
       }
     } else if (key.length === 14 && util.bufferToLowerCasedHeaderName(key) === 'content-length') {
       if (this.contentLength === -1) {
         this.contentLength = 0
       }
       for (let i = 0; i < buf.length; i++) {
-        this.contentLength = (this.contentLength * 10) + (buf[i] - 0x30)
+        this.contentLength = this.contentLength * 10 + (buf[i] - 0x30)
       }
+    } else if (key.length === 17 && util.bufferToLowerCasedHeaderName(key) === 'transfer-encoding') {
+      this.hasTransferEncoding = true
     }
 
     this.trackHeader(buf.length)
@@ -18279,7 +17483,7 @@ class Parser {
    * @param {Buffer} head
    */
   onUpgrade (head) {
-    const { upgrade, client, socket, headers, statusCode } = this
+    const { upgrade, client, socket, headers, statusCode, statusText } = this
 
     assert(upgrade)
     assert(client[kSocket] === socket)
@@ -18314,8 +17518,9 @@ class Parser {
     client.emit('disconnect', client[kUrl], [client], new InformationalError('upgrade'))
 
     try {
-      request.onRequestUpgrade(statusCode, headers, socket)
+      request.onRequestUpgrade(statusCode, headers, socket, statusText)
     } catch (err) {
+      util.errorRequest(client, request, err)
       util.destroy(socket, err)
     }
 
@@ -18363,16 +17568,27 @@ class Parser {
     assert(this.timeoutType === TIMEOUT_HEADERS)
 
     this.statusCode = statusCode
-    this.shouldKeepAlive = (
+    this.shouldKeepAlive =
       shouldKeepAlive ||
       // Override llhttp value which does not allow keepAlive for HEAD.
-      (request.method === 'HEAD' && !socket[kReset] && this.connectionKeepAlive)
-    )
+      (request.method === 'HEAD' && !socket[kReset] &&
+        /(?:^|,)[\t ]*keep-alive[\t ]*(?:,|$)/i.test(this.connection) &&
+        !/(?:^|,)[\t ]*close[\t ]*(?:,|$)/i.test(this.connection))
+
+    // Responses to HEAD and 204/304 responses never carry content
+    if (request.method === 'HEAD' || statusCode === 204 || statusCode === 304) {
+      // A non-zero Content-Length or Transfer-Encoding on a 204/304 means the
+      // server may also have sent content inappropriately, which would then be
+      // parsed as the next response on this connection. Accept it, but do not
+      // reuse the connection. HEAD requests are fine tho.
+      if (request.method !== 'HEAD' && (this.contentLength > 0 || this.hasTransferEncoding)) {
+        this.shouldKeepAlive = false
+      }
+      this.contentLength = -1
+    }
 
     if (this.statusCode >= 200) {
-      const bodyTimeout = request.bodyTimeout != null
-        ? request.bodyTimeout
-        : client[kBodyTimeout]
+      const bodyTimeout = request.bodyTimeout != null ? request.bodyTimeout : client[kBodyTimeout]
       this.setTimeout(bodyTimeout, TIMEOUT_BODY)
     } else if (this.timeout) {
       if (this.timeout.refresh) {
@@ -18400,10 +17616,7 @@ class Parser {
       const keepAliveTimeout = this.keepAlive ? util.parseKeepAliveTimeout(this.keepAlive) : null
 
       if (keepAliveTimeout != null) {
-        const timeout = Math.min(
-          keepAliveTimeout - client[kKeepAliveTimeoutThreshold],
-          client[kKeepAliveMaxTimeout]
-        )
+        const timeout = Math.min(keepAliveTimeout - client[kKeepAliveTimeoutThreshold], client[kKeepAliveMaxTimeout])
         if (timeout <= 0) {
           socket[kReset] = true
         } else {
@@ -18500,8 +17713,9 @@ class Parser {
     this.statusText = ''
     this.bytesRead = 0
     this.contentLength = -1
+    this.hasTransferEncoding = false
     this.keepAlive = ''
-    this.connectionKeepAlive = false
+    this.connection = ''
 
     this.headers = []
     this.headersSize = 0
@@ -18510,7 +17724,7 @@ class Parser {
       return 0
     }
 
-    if (request.method !== 'HEAD' && contentLength !== -1 && bytesRead !== contentLength) {
+    if (contentLength !== -1 && bytesRead !== contentLength) {
       util.destroy(socket, new ResponseContentLengthMismatchError())
       return -1
     }
@@ -18598,7 +17812,9 @@ function connectH1 (client, socket) {
   socket[kIdleSocketValidation] = 0
   socket[kIdleSocketValidationTimeout] = null
   socket[kSocketUsed] = false
-  socket[kParser] = new Parser(client, socket, llhttpInstance)
+  socket[kParser] = typeof esbuildDetection === 'undefined' && (client[kUseMilo] ?? getMiloEnabled())
+    ? new H1Parser(client, socket)
+    : new Parser(client, socket, llhttpInstance)
 
   util.addListener(socket, 'error', onHttpSocketError)
   util.addListener(socket, 'readable', onHttpSocketReadable)
@@ -18659,8 +17875,11 @@ function connectH1 (client, socket) {
           return true
         }
 
-        if (client[kRunning] > 0 && util.bodyLength(request.body) !== 0 &&
-          (util.isStream(request.body) || util.isAsyncIterable(request.body) || util.isFormDataLike(request.body))) {
+        if (
+          client[kRunning] > 0 &&
+          util.bodyLength(request.body) !== 0 &&
+          (util.isStream(request.body) || util.isAsyncIterable(request.body) || util.isFormDataLike(request.body))
+        ) {
           // Request with stream or iterator body can error while other requests
           // are inflight and indirectly error those as well.
           // Ensure this doesn't happen by waiting for inflight
@@ -18679,8 +17898,6 @@ function connectH1 (client, socket) {
 }
 
 function onHttpSocketError (err) {
-  assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
-
   const parser = this[kParser]
 
   // On Mac OS, we get an ECONNRESET even if there is a full body to be forwarded
@@ -18770,7 +17987,7 @@ function onSocketClose () {
 
 function clearIdleSocketValidation (socket) {
   if (socket[kIdleSocketValidationTimeout]) {
-    clearTimeout(socket[kIdleSocketValidationTimeout])
+    clearImmediate(socket[kIdleSocketValidationTimeout])
     socket[kIdleSocketValidationTimeout] = null
   }
 
@@ -18779,15 +17996,23 @@ function clearIdleSocketValidation (socket) {
 
 function scheduleIdleSocketValidation (client, socket) {
   socket[kIdleSocketValidation] = 1
-  socket[kIdleSocketValidationTimeout] = setTimeout(() => {
+  // Yield to the check phase (after poll) so unsolicited bytes / FIN / RST
+  // already pending on this idle keep-alive socket are processed before the
+  // next request is written (GHSA-35p6-xmwp-9g52).
+  //
+  // setTimeout(0) pays Node's ~1ms timer floor on every sequential reuse
+  // (#5493). setImmediate avoids that, but an *unref'd* Immediate lets poll
+  // block for ~500ms when the event loop is otherwise idle (#5600 / #5606).
+  // A ref'd Immediate both keeps the pending request alive and makes poll
+  // return immediately — the hybrid those issues asked for.
+  socket[kIdleSocketValidationTimeout] = setImmediate(() => {
     socket[kIdleSocketValidationTimeout] = null
     socket[kIdleSocketValidation] = 2
 
     if (client[kSocket] === socket && !socket.destroyed) {
       client[kResume]()
     }
-  }, 0)
-  socket[kIdleSocketValidationTimeout].unref?.()
+  })
 }
 
 /**
@@ -18840,9 +18065,7 @@ function resumeH1 (client) {
     } else if (client[kRunning] > 0 && socket[kParser].statusCode < 200) {
       if (socket[kParser].timeoutType !== TIMEOUT_HEADERS) {
         const request = client[kQueue][client[kRunningIdx]]
-        const headersTimeout = request.headersTimeout != null
-          ? request.headersTimeout
-          : client[kHeadersTimeout]
+        const headersTimeout = request.headersTimeout != null ? request.headersTimeout : client[kHeadersTimeout]
         socket[kParser].setTimeout(headersTimeout, TIMEOUT_HEADERS)
       }
     }
@@ -18899,18 +18122,17 @@ function writeH1 (client, request) {
   // servers and corrupt connection state. Do not
   // re-use the connection for further requests.
 
-  const expectsPayload = (
+  const expectsPayload =
     method === 'PUT' ||
     method === 'POST' ||
     method === 'PATCH' ||
     method === 'QUERY' ||
     method === 'PROPFIND' ||
     method === 'PROPPATCH'
-  )
 
   if (util.isFormDataLike(body)) {
     if (!extractBody) {
-      extractBody = (__nccwpck_require__(4296).extractBody)
+      extractBody = (__nccwpck_require__(5816).extractBody)
     }
 
     const [bodyStream, contentType] = extractBody(body)
@@ -18955,7 +18177,12 @@ function writeH1 (client, request) {
 
   // https://github.com/nodejs/undici/issues/2046
   // A user agent may send a Content-Length header with 0 value, this should be allowed.
-  if (shouldSendContentLength(method) && contentLength > 0 && request.contentLength !== null && request.contentLength !== contentLength) {
+  if (
+    shouldSendContentLength(method) &&
+    contentLength > 0 &&
+    request.contentLength !== null &&
+    request.contentLength !== contentLength
+  ) {
     if (client[kStrictContentLength]) {
       util.errorRequest(client, request, new RequestContentLengthMismatchError())
       return false
@@ -18971,7 +18198,7 @@ function writeH1 (client, request) {
    * @param {Error} [err]
    * @returns {void}
    */
-  const abort = (err) => {
+  const abort = err => {
     if (request.aborted || request.completed) {
       return
     }
@@ -19156,14 +18383,9 @@ function writeStream (abort, body, client, request, socket, contentLength, heade
 
     assert(socket.destroyed || (socket[kWriting] && client[kRunning] <= 1))
 
-    socket
-      .off('drain', onDrain)
-      .off('error', onFinished)
+    socket.off('drain', onDrain).off('error', onFinished)
 
-    body
-      .removeListener('data', onData)
-      .removeListener('end', onFinished)
-      .removeListener('close', onClose)
+    body.removeListener('data', onData).removeListener('end', onFinished).removeListener('close', onClose)
 
     if (!err) {
       try {
@@ -19182,19 +18404,13 @@ function writeStream (abort, body, client, request, socket, contentLength, heade
     }
   }
 
-  body
-    .on('data', onData)
-    .on('end', onFinished)
-    .on('error', onFinished)
-    .on('close', onClose)
+  body.on('data', onData).on('end', onFinished).on('error', onFinished).on('close', onClose)
 
   if (body.resume) {
     body.resume()
   }
 
-  socket
-    .on('drain', onDrain)
-    .on('error', onFinished)
+  socket.on('drain', onDrain).on('error', onFinished)
 
   if (body.errorEmitted ?? body.errored) {
     setImmediate(onFinished, body.errored)
@@ -19315,19 +18531,18 @@ async function writeIterable (abort, body, client, request, socket, contentLengt
     }
   }
 
-  const waitForDrain = () => new Promise((resolve, reject) => {
-    assert(callback === null)
+  const waitForDrain = () =>
+    new Promise((resolve, reject) => {
+      assert(callback === null)
 
-    if (socket[kError]) {
-      reject(socket[kError])
-    } else {
-      callback = resolve
-    }
-  })
+      if (socket[kError]) {
+        reject(socket[kError])
+      } else {
+        callback = resolve
+      }
+    })
 
-  socket
-    .on('close', onDrain)
-    .on('drain', onDrain)
+  socket.on('close', onDrain).on('drain', onDrain)
 
   const writer = new AsyncWriter({ abort, socket, request, contentLength, client, expectsPayload, header })
   try {
@@ -19346,9 +18561,7 @@ async function writeIterable (abort, body, client, request, socket, contentLengt
   } catch (err) {
     writer.destroy(err)
   } finally {
-    socket
-      .off('close', onDrain)
-      .off('drain', onDrain)
+    socket.off('close', onDrain).off('drain', onDrain)
   }
 }
 
@@ -19373,8 +18586,25 @@ class AsyncWriter {
     this.expectsPayload = expectsPayload
     this.header = header
     this.abort = abort
+    this.lengthMismatch = false
 
     socket[kWriting] = true
+  }
+
+  /**
+   * The body doesn't match the declared content-length and strictContentLength
+   * is off. Warn once, and mark the socket so it isn't reused: on the wire this
+   * request's body no longer ends where the server expects, so anything sent
+   * after it on the same connection would be misread.
+   * @returns {void}
+   */
+  onLengthMismatch () {
+    this.socket[kReset] = true
+
+    if (!this.lengthMismatch) {
+      this.lengthMismatch = true
+      process.emitWarning(new RequestContentLengthMismatchError())
+    }
   }
 
   /**
@@ -19392,7 +18622,7 @@ class AsyncWriter {
       return false
     }
 
-    const len = chunk instanceof Uint8Array ? chunk.byteLength : Buffer.byteLength(chunk)
+    let len = chunk instanceof Uint8Array ? chunk.byteLength : Buffer.byteLength(chunk)
     if (!len) {
       return true
     }
@@ -19403,7 +18633,17 @@ class AsyncWriter {
         throw new RequestContentLengthMismatchError()
       }
 
-      process.emitWarning(new RequestContentLengthMismatchError())
+      this.onLengthMismatch()
+
+      // Never write past the declared content-length. The server treats any
+      // extra bytes as the start of the next request, so a body could inject
+      // a request of its own (request smuggling).
+      const remaining = contentLength - bytesWritten
+      if (remaining === 0) {
+        return true
+      }
+      chunk = (typeof chunk === 'string' ? Buffer.from(chunk) : chunk).subarray(0, remaining)
+      len = remaining
     }
 
     socket.cork()
@@ -19478,9 +18718,12 @@ class AsyncWriter {
     if (contentLength !== null && bytesWritten !== contentLength) {
       if (client[kStrictContentLength]) {
         throw new RequestContentLengthMismatchError()
-      } else {
-        process.emitWarning(new RequestContentLengthMismatchError())
       }
+
+      // The body is shorter than declared, so the server is still waiting for
+      // the rest. Don't let the next request's bytes on this connection be
+      // read as the missing part of this body.
+      this.onLengthMismatch()
     }
 
     if (socket[kParser].timeout && socket[kParser].timeoutType === TIMEOUT_HEADERS) {
@@ -19513,7 +18756,7 @@ module.exports = connectH1
 
 /***/ }),
 
-/***/ 8016:
+/***/ 6096:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -19521,16 +18764,18 @@ module.exports = connectH1
 
 const assert = __nccwpck_require__(4589)
 const { pipeline } = __nccwpck_require__(7075)
-const util = __nccwpck_require__(4108)
+const util = __nccwpck_require__(6364)
 const {
   RequestContentLengthMismatchError,
+  ResponseContentLengthMismatchError,
   RequestAbortedError,
   SocketError,
   InformationalError,
   InvalidArgumentError,
   HeadersTimeoutError,
-  BodyTimeoutError
-} = __nccwpck_require__(39)
+  BodyTimeoutError,
+  ResponseExceededMaxSizeError
+} = __nccwpck_require__(5767)
 const {
   kUrl,
   kReset,
@@ -19558,9 +18803,10 @@ const {
   kRemoteSettings,
   kHTTP2Stream,
   kHTTP2SessionState,
-  kHTTP2Options
-} = __nccwpck_require__(9087)
-const { channels } = __nccwpck_require__(7170)
+  kHTTP2Options,
+  kMaxResponseSize
+} = __nccwpck_require__(3599)
+const { channels } = __nccwpck_require__(3906)
 
 const kOpenStreams = Symbol('open streams')
 const kRequestStreamId = Symbol('request stream id')
@@ -19708,6 +18954,11 @@ function canReplayRequest (request) {
   const { body } = request
 
   return body == null || util.isBuffer(body) || util.isBlobLike(body)
+}
+
+function hasResponseStarted (request) {
+  const state = request[kRequestStream]?.[kRequestStreamState]
+  return state?.responseReceived === true
 }
 
 // Count a GOAWAY refusal against the request's replay budget. A peer that
@@ -19923,7 +19174,8 @@ function resumeH2 (client) {
   const session = client[kHTTP2Session]
 
   if (socket?.destroyed === false) {
-    if (client[kSize] === 0 || client[kMaxConcurrentStreams] === 0) {
+    // After an upgrade the queue is empty but its stream is still in use, so never unref while a stream is open.
+    if (session[kOpenStreams] === 0 && client[kSize] === 0) {
       unrefH2Session(session)
     } else {
       refH2Session(session)
@@ -20058,8 +19310,14 @@ function applyConnectionWindowSize (connectionWindowSize) {
 }
 
 function onHttp2RemoteSettings (settings) {
-  // Fallbacks are a safe bet, remote setting will always override
-  this[kClient][kMaxConcurrentStreams] = settings.maxConcurrentStreams ?? this[kClient][kMaxConcurrentStreams]
+  const client = this[kClient]
+
+  // The configured maxConcurrentStreams (default 100) is the client's own
+  // ceiling. The server's SETTINGS_MAX_CONCURRENT_STREAMS can lower it, but
+  // must not raise it: a default Node.js server advertises 2^32-1.
+  const localMaxConcurrentStreams = client[kHTTP2Options].maxConcurrentStreams
+  const remoteMaxConcurrentStreams = settings.maxConcurrentStreams ?? client[kMaxConcurrentStreams] ?? localMaxConcurrentStreams
+  client[kMaxConcurrentStreams] = Math.min(remoteMaxConcurrentStreams, localMaxConcurrentStreams)
   /**
    * From RFC-8441
    * A sender MUST NOT send a SETTINGS_ENABLE_CONNECT_PROTOCOL parameter
@@ -20104,8 +19362,6 @@ function onHttp2SendPing (session) {
 }
 
 function onHttp2SessionError (err) {
-  assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
-
   this[kSocket][kError] = err
 
   if (this[kReceivedGoAway]) {
@@ -20157,9 +19413,12 @@ function onHttp2SessionGoAway (errorCode, lastStreamID) {
     const request = client[kQueue][i]
 
     if (request != null) {
+      // Read before detaching, which drops the stream state.
+      const responseStarted = hasResponseStarted(request)
+
       streamsToClose.push(detachRequestStreamForClose(request))
 
-      if (canReplayRequest(request) && registerGoAwayRefusal(request)) {
+      if (!responseStarted && canReplayRequest(request) && registerGoAwayRefusal(request)) {
         retriableRequests.push(request)
       } else {
         util.errorRequest(client, request, err)
@@ -20181,6 +19440,10 @@ function onHttp2SessionGoAway (errorCode, lastStreamID) {
     client[kSocket] = null
     client[kHTTPContext] = null
     client[kHTTP2Session] = null
+  }
+
+  if (this[kOpenStreams] === 0) {
+    unrefH2Session(this)
   }
 
   clearHttp2IdleTimeout(this)
@@ -20264,8 +19527,6 @@ function onHttp2SocketClose () {
 }
 
 function onHttp2SocketError (err) {
-  assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
-
   this[kError] = err
 
   if (this[kHTTP2Session]?.[kReceivedGoAway]) {
@@ -20287,10 +19548,12 @@ function noop () {}
 
 function closeStreamSession (stream) {
   const session = stream[kHTTP2Session]
+  const client = session[kClient]
 
   stream[kHTTP2Session] = null
   session[kOpenStreams] -= 1
-  if (session[kOpenStreams] === 0) {
+  // A session that received GOAWAY does not need to stay ref'd for queued requests.
+  if (session[kOpenStreams] === 0 && (client[kSize] === 0 || session[kReceivedGoAway])) {
     unrefH2Session(session)
     setHttp2IdleTimeout(session)
   }
@@ -20349,25 +19612,27 @@ function buildRequestHeaders (reqHeaders) {
   for (let n = 0; n < reqHeaders.length; n += 2) {
     const key = reqHeaders[n + 0]
     const val = reqHeaders[n + 1]
-    const current = headers[key]
+    // Reading headers[key] directly resolves `__proto__` through the prototype
+    // chain instead of reporting the header as absent.
+    const current = Object.hasOwn(headers, key) ? headers[key] : undefined
 
     if (key === 'cookie') {
       if (current != null) {
-        headers[key] = Array.isArray(current) ? (current.push(val), current) : [current, val]
+        util.setHeader(headers, key, Array.isArray(current) ? (current.push(val), current) : [current, val])
       } else {
-        headers[key] = val
+        util.setHeader(headers, key, val)
       }
 
       continue
     }
 
     if (typeof val === 'string') {
-      headers[key] = current ? `${current}, ${val}` : val
+      util.setHeader(headers, key, current ? `${current}, ${val}` : val)
       continue
     }
 
     for (let i = 0; i < val.length; i++) {
-      headers[key] = headers[key] ? `${headers[key]}, ${val[i]}` : val[i]
+      util.setHeader(headers, key, Object.hasOwn(headers, key) ? `${headers[key]}, ${val[i]}` : val[i])
     }
   }
 
@@ -20448,9 +19713,14 @@ function onUpgradeResponse (headers, _flags) {
   const statusCode = headers[HTTP2_HEADER_STATUS]
   delete headers[HTTP2_HEADER_STATUS]
 
-  request.onRequestUpgrade(statusCode, headers, stream)
+  try {
+    request.onRequestUpgrade(statusCode, headers, stream)
+  } catch (err) {
+    state.abort(err)
+    return
+  }
 
-  if (request.aborted || request.completed) {
+  if (request.aborted) {
     return
   }
 
@@ -20541,13 +19811,16 @@ function writeH2 (client, request) {
   const state = {
     abort: null,
     body: request.body,
+    bytesRead: 0,
     client,
     contentLength: null,
     expectsPayload: false,
+    maxResponseSize: client[kMaxResponseSize],
     request,
     headersTimeout,
     bodyTimeout,
     requestFinalized: false,
+    responseContentLength: null,
     responseReceived: false,
     bodySent: false,
     pendingEnd: false,
@@ -20693,7 +19966,7 @@ function writeH2 (client, request) {
   let contentLength = util.bodyLength(body)
 
   if (util.isFormDataLike(body)) {
-    extractBody ??= (__nccwpck_require__(4296).extractBody)
+    extractBody ??= (__nccwpck_require__(5816).extractBody)
 
     const [bodyStream, contentType] = extractBody(body)
     headers['content-type'] = contentType
@@ -20779,6 +20052,7 @@ function writeH2 (client, request) {
   // become unreachable once the stream closes, so plain `on` avoids the
   // per-listener `once` wrapper allocation.
   stream.on('response', onResponse)
+  stream.on('headers', onInterimResponse)
   stream.on('end', onEnd)
   stream.on('error', onError)
   stream.on('frameError', onFrameError)
@@ -20799,6 +20073,7 @@ function removeRequestStreamListeners (stream) {
   stream.off('error', noop)
   stream.off('continue', writeBodyH2)
   stream.off('response', onResponse)
+  stream.off('headers', onInterimResponse)
   stream.off('end', onEnd)
   stream.off('error', onError)
   stream.off('frameError', onFrameError)
@@ -20841,15 +20116,78 @@ function onData (chunk) {
     return
   }
 
+  const { request, maxResponseSize, responseContentLength } = state
+
+  if (request.aborted || request.completed) {
+    return
+  }
+
+  if (responseContentLength != null && state.bytesRead + chunk.length > responseContentLength) {
+    state.abort(new ResponseContentLengthMismatchError())
+    return
+  }
+
+  if (maxResponseSize > -1 && state.bytesRead + chunk.length > maxResponseSize) {
+    // Unlike HTTP/1.1, which destroys the socket because it cannot abandon one
+    // response without losing framing, resetting the offending stream leaves
+    // the session usable for its siblings.
+    state.abort(new ResponseExceededMaxSizeError())
+    return
+  }
+
+  state.bytesRead += chunk.length
+
+  if (request.onResponseData(chunk) === false) {
+    pauseResponseStream(stream, state)
+  }
+}
+
+// The body timeout measures how long the peer takes to send data. While the
+// consumer applies backpressure the peer can't send (it's out of flow-control
+// window), and Http2Stream's timer, which counts stream activity, would fire.
+// Stop it while paused and start a fresh one on resume, like HTTP/1.1, which
+// ignores the body timeout while its parser is paused.
+function pauseResponseStream (stream, state) {
+  stream.pause()
+  if (state.bodyTimeout) {
+    stream.setTimeout(0)
+  }
+}
+
+// Passed to the handler as its resume callback, bound to the stream.
+function resumeResponseStream () {
+  const stream = this
+  const state = stream[kRequestStreamState]
+
+  if (state != null && state.bodyTimeout && stream.isPaused()) {
+    stream.setTimeout(state.bodyTimeout)
+  }
+
+  stream.resume()
+}
+
+function onInterimResponse (headers) {
+  const stream = this
+  const state = stream[kRequestStreamState]
+
+  if (state == null) {
+    return
+  }
+
   const { request } = state
 
   if (request.aborted || request.completed) {
     return
   }
 
-  if (request.onResponseData(chunk) === false) {
-    stream.pause()
-  }
+  // node http2 emits 'headers' for interim (1xx) informational responses,
+  // while the final response arrives via 'response'. Forward these to the
+  // handler so that onInfo is invoked, matching the HTTP/1 behaviour and the
+  // documented onInfo contract.
+  const statusCode = headers[HTTP2_HEADER_STATUS]
+  delete headers[HTTP2_HEADER_STATUS]
+
+  request.onResponseStart(Number(statusCode), headers, noop, '')
 }
 
 function onResponse (headers) {
@@ -20871,10 +20209,19 @@ function onResponse (headers) {
     stream.end()
   }
 
-  const statusCode = headers[HTTP2_HEADER_STATUS]
+  const statusCode = Number(headers[HTTP2_HEADER_STATUS])
   delete headers[HTTP2_HEADER_STATUS]
   request.onResponseStarted()
   state.responseReceived = true
+
+  // A Content-Length in HEAD and 304 responses describes the selected
+  // representation rather than DATA on this stream. Successful CONNECT uses
+  // the upgrade path above; all other final responses use Content-Length as
+  // their DATA payload length.
+  if (request.method !== 'HEAD' && statusCode !== 304) {
+    const contentLength = headers[HTTP2_HEADER_CONTENT_LENGTH]
+    state.responseContentLength = contentLength == null ? null : Number(contentLength)
+  }
 
   if (state.headersTimeout || state.bodyTimeout) {
     stream.setTimeout(state.bodyTimeout)
@@ -20893,8 +20240,8 @@ function onResponse (headers) {
     return
   }
 
-  if (request.onResponseStart(Number(statusCode), headers, stream.resume.bind(stream), '') === false) {
-    stream.pause()
+  if (request.onResponseStart(statusCode, headers, resumeResponseStream.bind(stream), '') === false) {
+    pauseResponseStream(stream, state)
   }
 
   stream.on('data', onData)
@@ -20916,6 +20263,11 @@ function onEnd () {
   // trailers on the state by now, so completing here still delivers them.
   if (state.responseReceived) {
     if (!request.aborted && !request.completed) {
+      if (state.responseContentLength != null && state.bytesRead !== state.responseContentLength) {
+        state.abort(new ResponseContentLengthMismatchError())
+        return
+      }
+
       state.pendingEnd = true
 
       // Complete on 'end': a blocked event loop can keep the stream's 'close'
@@ -20971,6 +20323,13 @@ function onError (err) {
   }
 
   stream.off('error', onError)
+
+  // Node's HTTP/2 implementation can turn an incomplete Content-Length body
+  // into a protocol stream error instead of emitting 'end'. Prefer the
+  // content-length mismatch error when the received byte count proves it.
+  if (state.responseContentLength != null && state.bytesRead !== state.responseContentLength) {
+    err = new ResponseContentLengthMismatchError()
+  }
 
   if (typeof stream.rstCode === 'number' && stream.rstCode !== NGHTTP2_NO_ERROR) {
     err.http2ErrorCode = stream.rstCode
@@ -21262,7 +20621,7 @@ module.exports = connectH2
 
 /***/ }),
 
-/***/ 3681:
+/***/ 7057:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -21271,17 +20630,17 @@ module.exports = connectH2
 const assert = __nccwpck_require__(4589)
 const net = __nccwpck_require__(7030)
 const http = __nccwpck_require__(7067)
-const util = __nccwpck_require__(4108)
-const { ClientStats } = __nccwpck_require__(6570)
-const { channels } = __nccwpck_require__(7170)
-const Request = __nccwpck_require__(1867)
-const DispatcherBase = __nccwpck_require__(4717)
+const util = __nccwpck_require__(6364)
+const { ClientStats } = __nccwpck_require__(1370)
+const { channels } = __nccwpck_require__(3906)
+const Request = __nccwpck_require__(7339)
+const DispatcherBase = __nccwpck_require__(1949)
 const {
   InvalidArgumentError,
   InformationalError,
   ClientDestroyedError
-} = __nccwpck_require__(39)
-const buildConnector = __nccwpck_require__(6132)
+} = __nccwpck_require__(5767)
+const buildConnector = __nccwpck_require__(5140)
 const {
   kUrl,
   kServerName,
@@ -21322,10 +20681,11 @@ const {
   kMaxConcurrentStreams,
   kHostAuthority,
   kResume,
-  kHTTP2Options
-} = __nccwpck_require__(9087)
-const connectH1 = __nccwpck_require__(8377)
-const connectH2 = __nccwpck_require__(8016)
+  kHTTP2Options,
+  kUseMilo
+} = __nccwpck_require__(3599)
+const connectH1 = __nccwpck_require__(7145)
+const connectH2 = __nccwpck_require__(6096)
 
 const kClosedResolve = Symbol('kClosedResolve')
 
@@ -21404,8 +20764,10 @@ class Client extends DispatcherBase {
     initialWindowSize,
     connectionWindowSize,
     pingInterval,
+    useMilo,
     webSocket,
-    h2Options
+    h2Options,
+    eventSource
   } = {}) {
     if (keepAlive !== undefined) {
       throw new InvalidArgumentError('unsupported keepAlive, use pipelining=0 instead')
@@ -21505,7 +20867,7 @@ class Client extends DispatcherBase {
           throw new InvalidArgumentError('h2Options.settings.initialWindowSize must be a positive integer, greater than 0')
         }
 
-        if (h2Options.maxConcurrentStreams != null && (!Number.isInteger(h2Options.connectionWindowSize) || h2Options.maxConcurrentStreams < 1)) {
+        if (h2Options.maxConcurrentStreams != null && (!Number.isInteger(h2Options.maxConcurrentStreams) || h2Options.maxConcurrentStreams < 1)) {
           throw new InvalidArgumentError('h2Options.maxConcurrentStreams must be a positive integer, greater than 0')
         }
 
@@ -21544,7 +20906,7 @@ class Client extends DispatcherBase {
       }
     }
 
-    super({ webSocket })
+    super({ webSocket, eventSource })
 
     if (typeof connect !== 'function') {
       connect = buildConnector({
@@ -21602,6 +20964,7 @@ class Client extends DispatcherBase {
         initialWindowSize: h2Options?.initialWindowSize ?? initialWindowSize ?? 262144
       }
     }
+    this[kUseMilo] = useMilo
 
     // kQueue is built up of 3 sections separated by
     // the kRunningIdx and kPendingIdx indices.
@@ -21967,6 +21330,11 @@ function _resume (client, sync) {
       return
     }
 
+    if (request.aborted) {
+      client[kQueue].splice(client[kPendingIdx], 1)
+      continue
+    }
+
     if (client[kUrl].protocol === 'https:' && client[kServerName] !== request.servername) {
       if (client[kRunning] > 0) {
         return
@@ -22010,23 +21378,26 @@ module.exports = Client
 
 /***/ }),
 
-/***/ 4717:
+/***/ 1949:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const Dispatcher = __nccwpck_require__(1319)
+const buffer = __nccwpck_require__(4573)
+const Dispatcher = __nccwpck_require__(4727)
 const {
   ClientDestroyedError,
   ClientClosedError,
   InvalidArgumentError
-} = __nccwpck_require__(39)
-const { kDestroy, kClose, kClosed, kDestroyed, kDispatch } = __nccwpck_require__(9087)
+} = __nccwpck_require__(5767)
+const { kDestroy, kClose, kClosed, kDestroyed, kDispatch } = __nccwpck_require__(3599)
+const { defaultWebSocketMaxFragments, defaultWebSocketMaxPayloadSize } = __nccwpck_require__(2531)
 
 const kOnDestroyed = Symbol('onDestroyed')
 const kOnClosed = Symbol('onClosed')
 const kWebSocketOptions = Symbol('webSocketOptions')
+const kEventSourceOptions = Symbol('eventSourceOptions')
 
 class DispatcherBase extends Dispatcher {
   /** @type {boolean} */
@@ -22047,15 +21418,25 @@ class DispatcherBase extends Dispatcher {
   constructor (opts) {
     super()
     this[kWebSocketOptions] = opts?.webSocket ?? {}
+    this[kEventSourceOptions] = opts?.eventSource ?? {}
   }
 
   /**
-   * @returns {import('../../types/dispatcher').WebSocketOptions}
+   * @returns {import('../../types/client').Client.WebSocketOptions}
    */
   get webSocketOptions () {
     return {
-      maxFragments: this[kWebSocketOptions].maxFragments ?? 131072,
-      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? 128 * 1024 * 1024 // 128 MB default
+      maxFragments: this[kWebSocketOptions].maxFragments ?? defaultWebSocketMaxFragments,
+      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? defaultWebSocketMaxPayloadSize
+    }
+  }
+
+  /**
+   * @returns {import('../../types/client').Client.EventSourceOptions}
+   */
+  get eventSourceOptions () {
+    return {
+      maxEventSize: this[kEventSourceOptions].maxEventSize ?? buffer.kStringMaxLength
     }
   }
 
@@ -22203,12 +21584,13 @@ module.exports = DispatcherBase
 
 /***/ }),
 
-/***/ 1319:
+/***/ 4727:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 const EventEmitter = __nccwpck_require__(8474)
+const { kOriginless, kUrl } = __nccwpck_require__(3599)
 
 class Dispatcher extends EventEmitter {
   dispatch () {
@@ -22226,6 +21608,10 @@ class Dispatcher extends EventEmitter {
   compose (...args) {
     // So we handle [interceptor1, interceptor2] or interceptor1, interceptor2, ...
     const interceptors = Array.isArray(args[0]) ? args[0] : args
+    // null disables origin-dependent interceptors; undefined uses opts.origin.
+    const interceptorOrigin = this[kOriginless] === true
+      ? null
+      : this[kUrl]?.origin
     let dispatch = this.dispatch.bind(this)
 
     for (const interceptor of interceptors) {
@@ -22237,11 +21623,20 @@ class Dispatcher extends EventEmitter {
         throw new TypeError(`invalid interceptor, expected function received ${typeof interceptor}`)
       }
 
-      dispatch = interceptor(dispatch)
+      dispatch = interceptor(dispatch, interceptorOrigin)
 
       if (dispatch == null || typeof dispatch !== 'function' || dispatch.length !== 2) {
         throw new TypeError('invalid interceptor')
       }
+    }
+
+    const originalDispatch = dispatch
+    const self = this
+    dispatch = function (opts, handler) {
+      if (opts && typeof opts === 'object' && !opts.origin && self[kUrl]) {
+        opts = Object.assign({}, opts, { origin: self[kUrl].origin })
+      }
+      return originalDispatch(opts, handler)
     }
 
     return new Proxy(this, {
@@ -22255,15 +21650,16 @@ module.exports = Dispatcher
 
 /***/ }),
 
-/***/ 1846:
+/***/ 9830:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const Dispatcher = __nccwpck_require__(1319)
-const { InvalidArgumentError } = __nccwpck_require__(39)
-const { toRawHeaders } = __nccwpck_require__(4108)
+const Dispatcher = __nccwpck_require__(4727)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
+const { toRawHeaders } = __nccwpck_require__(6364)
+const { kOriginless, kUrl } = __nccwpck_require__(3599)
 
 class LegacyHandlerWrapper {
   #handler
@@ -22277,12 +21673,16 @@ class LegacyHandlerWrapper {
   }
 
   onRequestUpgrade (controller, statusCode, headers, socket) {
-    const rawHeaders = controller?.rawHeaders ?? toRawHeaders(headers ?? {})
+    const rawHeaders = Array.isArray(controller?.rawHeaders)
+      ? controller.rawHeaders
+      : toRawHeaders(controller?.rawHeaders ?? headers ?? {})
     this.#handler.onUpgrade?.(statusCode, rawHeaders, socket)
   }
 
   onResponseStart (controller, statusCode, headers, statusMessage) {
-    const rawHeaders = controller?.rawHeaders ?? toRawHeaders(headers ?? {})
+    const rawHeaders = Array.isArray(controller?.rawHeaders)
+      ? controller.rawHeaders
+      : toRawHeaders(controller?.rawHeaders ?? headers ?? {})
 
     if (this.#handler.onHeaders?.(statusCode, rawHeaders, () => controller.resume(), statusMessage) === false) {
       controller.pause()
@@ -22296,7 +21696,9 @@ class LegacyHandlerWrapper {
   }
 
   onResponseEnd (controller, trailers) {
-    const rawTrailers = controller?.rawTrailers ?? toRawHeaders(trailers ?? {})
+    const rawTrailers = Array.isArray(controller?.rawTrailers)
+      ? controller.rawTrailers
+      : toRawHeaders(controller?.rawTrailers ?? trailers ?? {})
     this.#handler.onComplete?.(rawTrailers)
   }
 
@@ -22332,6 +21734,8 @@ class Dispatcher1Wrapper extends Dispatcher {
     }
 
     this.#dispatcher = dispatcher
+    this[kUrl] = dispatcher[kUrl]
+    this[kOriginless] = dispatcher[kOriginless]
   }
 
   static wrapHandler (handler) {
@@ -22356,6 +21760,17 @@ class Dispatcher1Wrapper extends Dispatcher {
     return this.#dispatcher.dispatch(opts, Dispatcher1Wrapper.wrapHandler(handler))
   }
 
+  // Older undici versions read WebSocket and EventSource receive limits from
+  // the (legacy) global dispatcher, which is this wrapper, so report the
+  // wrapped dispatcher's settings.
+  get webSocketOptions () {
+    return this.#dispatcher.webSocketOptions
+  }
+
+  get eventSourceOptions () {
+    return this.#dispatcher.eventSourceOptions
+  }
+
   close (...args) {
     return this.#dispatcher.close(...args)
   }
@@ -22370,16 +21785,16 @@ module.exports = Dispatcher1Wrapper
 
 /***/ }),
 
-/***/ 2389:
+/***/ 1381:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const DispatcherBase = __nccwpck_require__(4717)
-const { kClose, kDestroy, kClosed, kDestroyed, kDispatch, kNoProxyAgent, kHttpProxyAgent, kHttpsProxyAgent } = __nccwpck_require__(9087)
-const ProxyAgent = __nccwpck_require__(3652)
-const Agent = __nccwpck_require__(1361)
+const DispatcherBase = __nccwpck_require__(1949)
+const { kClose, kDestroy, kClosed, kDestroyed, kDispatch, kNoProxyAgent, kHttpProxyAgent, kHttpsProxyAgent } = __nccwpck_require__(3599)
+const ProxyAgent = __nccwpck_require__(4836)
+const Agent = __nccwpck_require__(3857)
 
 const DEFAULT_PORTS = {
   'http:': 80,
@@ -22392,7 +21807,7 @@ class EnvHttpProxyAgent extends DispatcherBase {
   #opts = null
 
   constructor (opts = {}) {
-    super()
+    super(opts)
     this.#opts = opts
 
     const { httpProxy, httpsProxy, noProxy, ...agentOpts } = opts
@@ -22445,6 +21860,13 @@ class EnvHttpProxyAgent extends DispatcherBase {
     // brackets from IPv6 literals (e.g. "[::1]" -> "::1") so that the
     // result matches the unbracketed form stored by #parseNoProxy.
     hostname = hostname.replace(/:\d*$/, '').replace(/^\[(.+)\]$/, '$1').toLowerCase()
+    // Drop a trailing dot: it only marks the fully qualified form of a domain
+    // name ("example.com." and "example.com" are the same name, RFC 1034 root
+    // label). This runs on every dispatch, so it is a charCode check rather
+    // than a third regex. `length > 1` leaves the degenerate host "." alone.
+    if (hostname.length > 1 && hostname.charCodeAt(hostname.length - 1) === 46) {
+      hostname = hostname.slice(0, -1)
+    }
     port = Number.parseInt(port, 10) || DEFAULT_PORTS[protocol] || 0
     if (!this.#shouldProxy(hostname, port)) {
       return this[kNoProxyAgent]
@@ -22463,17 +21885,25 @@ class EnvHttpProxyAgent extends DispatcherBase {
     if (this.#noProxyEntries.length === 0) {
       return true // Always proxy if NO_PROXY is not set or empty.
     }
-    if (this.#noProxyValue === '*') {
-      return false // Never proxy if wildcard is set.
-    }
 
     for (let i = 0; i < this.#noProxyEntries.length; i++) {
       const entry = this.#noProxyEntries[i]
+      // A bare `*` entry matches all hosts regardless of its position or the
+      // surrounding whitespace (e.g. ` * ` or `none.invalid,*`). If a port is
+      // attached (`*:80`) it only bypasses that port.
+      if (entry.hostname === '*') {
+        if (entry.port && entry.port !== port) {
+          continue
+        }
+        return false // Never proxy if a wildcard entry is present.
+      }
       if (entry.port && entry.port !== port) {
         continue // Skip if ports don't match.
       }
-      // Don't proxy if the hostname is equal with the no_proxy host.
-      if (hostname === entry.hostname) {
+      // Don't proxy if the hostname is equal with the no_proxy host. A
+      // `*.example.com` wildcard matches subdomains only, not the apex
+      // `example.com`, so exact matches are skipped for wildcard entries.
+      if (!entry.wildcard && hostname === entry.hostname) {
         return false
       }
       // Don't proxy if the hostname is the subdomain of the no_proxy host.
@@ -22518,10 +21948,17 @@ class EnvHttpProxyAgent extends DispatcherBase {
         port = parsed ? Number.parseInt(parsed[2], 10) : 0
       }
 
+      // A leading `*` marks a subdomain wildcard (`*.example.com`), distinct
+      // from a plain or leading-dot suffix (`example.com` / `.example.com`)
+      // which also matches the apex. `*.example.com` must only match
+      // subdomains, never the apex `example.com` itself.
+      const wildcard = entry.charCodeAt(0) === 42 /* '*' */
+
       noProxyEntries.push({
-        // strip leading dot or asterisk with dot
-        hostname: hostname.replace(/^\*?\./, '').toLowerCase(),
-        port
+        // strip leading dot or asterisk with dot, and any trailing dot
+        hostname: hostname.replace(/^\*?\./, '').replace(/^(.+)\.$/, '$1').toLowerCase(),
+        port,
+        wildcard
       })
     }
 
@@ -22546,7 +21983,7 @@ module.exports = EnvHttpProxyAgent
 
 /***/ }),
 
-/***/ 7800:
+/***/ 7064:
 /***/ ((module) => {
 
 "use strict";
@@ -22689,14 +22126,14 @@ module.exports = class FixedQueue {
 
 /***/ }),
 
-/***/ 1123:
+/***/ 5795:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { InvalidArgumentError } = __nccwpck_require__(39)
-const Client = __nccwpck_require__(3681)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
+const Client = __nccwpck_require__(7057)
 
 class H2CClient extends Client {
   constructor (origin, clientOpts) {
@@ -22748,16 +22185,1088 @@ module.exports = H2CClient
 
 /***/ }),
 
-/***/ 7852:
+/***/ 6997:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { PoolStats } = __nccwpck_require__(6570)
-const DispatcherBase = __nccwpck_require__(4717)
-const FixedQueue = __nccwpck_require__(7800)
-const { kConnected, kSize, kRunning, kPending, kQueued, kBusy, kFree, kUrl, kClose, kDestroy, kDispatch } = __nccwpck_require__(9087)
+const assert = __nccwpck_require__(4589)
+const util = __nccwpck_require__(6364)
+const timers = __nccwpck_require__(3999)
+const {
+  HeadersTimeoutError,
+  HeadersOverflowError,
+  SocketError,
+  InformationalError,
+  BodyTimeoutError,
+  HTTPParserError,
+  ResponseContentLengthMismatchError,
+  ResponseExceededMaxSizeError
+} = __nccwpck_require__(5767)
+const {
+  kUrl,
+  kReset,
+  kClient,
+  kParser,
+  kBlocking,
+  kRunning,
+  kWriting,
+  kQueue,
+  kKeepAliveDefaultTimeout,
+  kRunningIdx,
+  kError,
+  kPipelining,
+  kSocket,
+  kKeepAliveTimeoutValue,
+  kKeepAliveMaxTimeout,
+  kKeepAliveTimeoutThreshold,
+  kBodyTimeout,
+  kMaxResponseSize,
+  kResume,
+  kHTTPContext,
+  kMaxHeadersSize
+} = __nccwpck_require__(3599)
+
+const FastBuffer = Buffer[Symbol.species]
+const removeAllListeners = util.removeAllListeners
+
+const kPausedByHandler = Symbol('kPausedByHandler')
+
+const BUFFER_PAGE_SIZE = 4096
+const INITIAL_BUFFER_SIZE = 128 * 1024
+const EMPTY_BUF = Buffer.alloc(0)
+const BODY_KIND_CONTENT_LENGTH = 0
+const EVENT_RANGE_SIZE = 9
+const EVENT_HEADERS_SIZE = 19
+
+let miloPackage
+
+// We disable wasm SIMD on ppc64 as it seems to be broken on Power 9 architectures.
+let useWasmSIMD = process.arch !== 'ppc64'
+// The Env Variable UNDICI_NO_WASM_SIMD allows explicitly overriding the default behavior.
+if (process.env.UNDICI_NO_WASM_SIMD === '1') {
+  useWasmSIMD = false
+} else if (process.env.UNDICI_NO_WASM_SIMD === '0') {
+  useWasmSIMD = true
+}
+
+const USE_NATIVE_TIMER = 0
+const USE_FAST_TIMER = 1
+const TIMEOUT_HEADERS = 2 | USE_FAST_TIMER
+const TIMEOUT_BODY = 4 | USE_FAST_TIMER
+const TIMEOUT_KEEP_ALIVE = 8 | USE_NATIVE_TIMER
+
+let miloEnabled =
+  process.env.UNDICI_USE_MILO === '1' || process.env.UNDICI_USE_MILO === 'true'
+let miloInstance = null
+let currentBuffer = null
+let currentBufferSize = 0
+let currentBufferPtr = null
+let currentBufferRef = null
+
+function onParserTimeout (parserWeakRef) {
+  const parser = parserWeakRef.deref ? parserWeakRef.deref() : parserWeakRef
+  if (!parser) {
+    return
+  }
+
+  const { socket, timeoutType, client, paused } = parser
+
+  if (timeoutType === TIMEOUT_HEADERS) {
+    if (!socket[kWriting] || socket.writableNeedDrain || client[kRunning] > 1) {
+      assert(!paused, 'cannot be paused while waiting for headers')
+      util.destroy(socket, new HeadersTimeoutError())
+    }
+  } else if (timeoutType === TIMEOUT_BODY) {
+    if (!paused) {
+      util.destroy(socket, new BodyTimeoutError())
+    }
+  } else if (timeoutType === TIMEOUT_KEEP_ALIVE) {
+    assert(client[kRunning] === 0 && client[kKeepAliveTimeoutValue])
+    util.destroy(socket, new InformationalError('socket idle timeout'))
+  }
+}
+
+function getMilo () {
+  if (miloInstance) {
+    return miloInstance
+  }
+
+  // Milo modules compile WASM on load; defer loading until the parser is needed.
+  if (useWasmSIMD) {
+    try {
+      miloPackage = __nccwpck_require__(2453)
+    } catch {}
+  }
+
+  miloPackage = miloPackage || __nccwpck_require__(2297)
+  miloInstance = miloPackage.setup()
+  return miloInstance
+}
+
+class H1Parser {
+  constructor (client, socket) {
+    this.milo = getMilo()
+
+    this.client = client
+    this.socket = socket
+    this.parser = this.milo.create()
+    this.events = new FastBuffer(
+      this.milo.memory.buffer,
+      this.parser + this.milo.ParserFields.EVENTS,
+      4
+    ).readUInt32LE(0)
+
+    this.milo.setShouldAutodetect(this.parser, false)
+    this.milo.setIsRequest(this.parser, false)
+    this.milo.setShouldManageUnconsumed(this.parser, false)
+    this.milo.setShouldSuspendAfterHeaders(this.parser, true)
+    this.milo.setMaxHeaderLength(this.parser, client[kMaxHeadersSize])
+    this.milo.setActiveEvents(
+      this.parser,
+      this.milo.EVENT_ACTIVE_ON_ERROR |
+        this.milo.EVENT_ACTIVE_ON_MESSAGE_COMPLETE |
+        this.milo.EVENT_ACTIVE_ON_REASON |
+        this.milo.EVENT_ACTIVE_ON_HEADER_NAME |
+        this.milo.EVENT_ACTIVE_ON_HEADER_VALUE |
+        this.milo.EVENT_ACTIVE_ON_HEADERS |
+        this.milo.EVENT_ACTIVE_ON_DATA |
+        this.milo.EVENT_ACTIVE_ON_TRAILER_NAME |
+        this.milo.EVENT_ACTIVE_ON_TRAILER_VALUE
+    )
+
+    this.timeout = null
+    this.timeoutWeakRef = new WeakRef(this)
+    this.timeoutValue = null
+    this.timeoutType = null
+    this.statusCode = 0
+    this.statusText = ''
+    this.upgrade = false
+    this.responseStarted = false
+    this.pausedByParser = false
+    this.pauseStateIsStart = false
+    this.headers = []
+    this.trailers = []
+    this.headersSize = 0
+    this.trailersSize = 0
+    this.headersMaxSize = client[kMaxHeadersSize]
+    this.shouldKeepAlive = false
+    this.paused = false
+    this.errored = false
+    this.waitingForMoreData = 0
+    this.resume = this.resume.bind(this)
+    this.bytesRead = 0
+    this.keepAlive = ''
+    this.connection = ''
+    this.contentLength = -1
+    this.maxResponseSize = client[kMaxResponseSize]
+    this.directBodyRemaining = 0
+    this.directBodyCompletePending = false
+    this.headersSuspended = false
+    this.skipBody = false
+
+    this[kPausedByHandler] = false
+
+    if (
+      INITIAL_BUFFER_SIZE > currentBufferSize ||
+      currentBuffer.buffer !== this.milo.memory.buffer
+    ) {
+      this.ensureBuffers(INITIAL_BUFFER_SIZE)
+    } else {
+      this.updateBuffers()
+    }
+  }
+
+  setTimeout (delay, type) {
+    if (
+      delay !== this.timeoutValue ||
+      (type & USE_FAST_TIMER) ^ (this.timeoutType & USE_FAST_TIMER)
+    ) {
+      if (this.timeout) {
+        timers.clearTimeout(this.timeout)
+        this.timeout = null
+      }
+
+      if (delay) {
+        if (type & USE_FAST_TIMER) {
+          this.timeout = timers.setFastTimeout(
+            onParserTimeout,
+            delay,
+            this.timeoutWeakRef
+          )
+        } else {
+          this.timeout = setTimeout(
+            onParserTimeout,
+            delay,
+            this.timeoutWeakRef
+          )
+          this.timeout?.unref()
+        }
+      }
+
+      this.timeoutValue = delay
+    } else if (this.timeout?.refresh) {
+      this.timeout.refresh()
+    }
+
+    this.timeoutType = type
+  }
+
+  ensureBuffers (size) {
+    const { milo } = this
+
+    if (currentBufferPtr != null) {
+      milo.dealloc(currentBufferPtr, currentBufferSize)
+    }
+
+    // Reallocate buffers
+    currentBufferSize = Math.ceil(size / BUFFER_PAGE_SIZE) * BUFFER_PAGE_SIZE
+    currentBufferPtr = milo.alloc(currentBufferSize)
+    currentBuffer = new FastBuffer(
+      milo.memory.buffer,
+      currentBufferPtr,
+      currentBufferSize
+    )
+
+    this.updateBuffers()
+  }
+
+  updateBuffers () {
+    this.parserFields = new FastBuffer(this.milo.memory.buffer, this.parser)
+    this.parserEvents = new FastBuffer(
+      this.milo.memory.buffer,
+      this.events,
+      64 * 1024
+    )
+  }
+
+  resume () {
+    if (this.socket.destroyed || !this.paused) {
+      return
+    }
+
+    this.milo.resume(this.parser)
+
+    assert(this.timeoutType === TIMEOUT_BODY)
+    if (this.timeout?.refresh) {
+      this.timeout.refresh()
+    }
+
+    this.paused = false
+    if (this.directBodyCompletePending) {
+      try {
+        this.completeDirectBody()
+      } catch (err) {
+        util.destroy(this.socket, err)
+        return
+      }
+
+      if (this.paused) {
+        return
+      }
+    }
+
+    this.readMore()
+  }
+
+  readMore () {
+    if (this.paused || !this.parser) {
+      return
+    }
+
+    while (!this.paused && this.parser) {
+      if (
+        this.waitingForMoreData &&
+        this.socket.readableLength <= this.waitingForMoreData
+      ) {
+        break
+      }
+
+      this.waitingForMoreData = 0
+
+      const chunk = this.socket.read()
+      if (chunk === null) {
+        break
+      }
+
+      if (this.execute(chunk) === false) {
+        break
+      }
+    }
+  }
+
+  execute (data) {
+    const available = data.length
+    assert(!this.paused)
+
+    const { socket, milo } = this
+
+    try {
+      if (this.directBodyRemaining > 0) {
+        return this.consumeDirectBody(data)
+      }
+
+      if (currentBuffer.buffer !== milo.memory.buffer) {
+        currentBuffer = new FastBuffer(
+          milo.memory.buffer,
+          currentBufferPtr,
+          currentBufferSize
+        )
+        this.updateBuffers()
+      } else if (this.parserEvents.buffer !== milo.memory.buffer) {
+        this.updateBuffers()
+      }
+
+      let offset = 0
+      let parseLen = available
+      const headersEnd = this.statusCode === 0 ? data.indexOf('\r\n\r\n') : -1
+
+      if (headersEnd !== -1) {
+        parseLen = headersEnd + 4
+      }
+
+      for (;;) {
+        if (parseLen > currentBufferSize) {
+          this.ensureBuffers(parseLen)
+        }
+
+        const parseData = data.subarray(offset, offset + parseLen)
+        currentBuffer.set(parseData)
+        currentBufferRef = parseData
+
+        const consumed = milo.parse(this.parser, currentBufferPtr, parseLen)
+        this.drainEvents()
+
+        const consumedTotal = offset + consumed
+
+        if (
+          this.errored ||
+          (consumed === 0 &&
+            this.parserFields[milo.ParserFields.ERROR_CODE] !== milo.ERROR_NONE)
+        ) {
+          throw this.createError(data.subarray(consumedTotal))
+        } else if (this.upgrade) {
+          this.onUpgrade(data.subarray(consumedTotal))
+          return false
+        } else if (this.directBodyCompletePending) {
+          this.completeDirectBody()
+
+          if (this.paused) {
+            return false
+          }
+        } else if (this.pausedByParser) {
+          this.pausedByParser = false
+          this.headersSuspended = false
+          if (this[kPausedByHandler] && this.pauseStateIsStart) {
+            this.pauseStateIsStart = false
+            milo.resume(this.parser)
+            this[kPausedByHandler] = false
+            return false
+          }
+
+          this.pauseStateIsStart = false
+          this.paused = true
+          socket.unshift(data.subarray(consumedTotal))
+          return false
+        }
+
+        if (this.directBodyRemaining > 0) {
+          return this.consumeDirectBody(data.subarray(consumedTotal))
+        }
+
+        if (consumed < parseLen) {
+          const remaining = data.subarray(consumedTotal)
+          socket.unshift(remaining)
+          this.waitingForMoreData = consumed === 0 ? remaining.length : 0
+          return false
+        }
+
+        offset = consumedTotal
+
+        if (offset >= available) {
+          if (this.headersSuspended) {
+            this.headersSuspended = false
+            parseLen = 0
+            continue
+          }
+
+          return true
+        }
+
+        this.headersSuspended = false
+        parseLen = available - offset
+      }
+    } catch (err) {
+      util.destroy(socket, err)
+      return false
+    } finally {
+      currentBufferRef = null
+    }
+  }
+
+  consumeDirectBody (data) {
+    const { socket, client, maxResponseSize } = this
+    const available = data.length
+    const len = Math.min(available, this.directBodyRemaining)
+
+    if (this.timeout?.refresh) {
+      this.timeout.refresh()
+    }
+
+    if (len > 0) {
+      const request = client[kQueue][client[kRunningIdx]]
+      assert(request)
+      assert(this.timeoutType === TIMEOUT_BODY)
+      assert(this.statusCode >= 200)
+
+      if (maxResponseSize > -1 && this.bytesRead + len > maxResponseSize) {
+        throw new ResponseExceededMaxSizeError()
+      }
+
+      this.bytesRead += len
+      this.directBodyRemaining -= len
+
+      if (request.onResponseData(data.subarray(0, len)) === false) {
+        this.directBodyCompletePending = this.directBodyRemaining === 0
+        this.pauseParser()
+        this[kPausedByHandler] = true
+        this.pausedByParser = false
+        this.paused = true
+
+        if (len < available) {
+          socket.unshift(data.subarray(len))
+        }
+
+        return false
+      }
+    }
+
+    if (this.directBodyRemaining === 0) {
+      this.completeDirectBody()
+
+      const remaining = data.subarray(len)
+      if (
+        this.errored ||
+        this.parserFields[this.milo.ParserFields.ERROR_CODE] !==
+          this.milo.ERROR_NONE
+      ) {
+        throw this.createError(remaining)
+      } else if (this.pausedByParser) {
+        this.pausedByParser = false
+        this.pauseStateIsStart = false
+        this.paused = true
+        if (remaining.length > 0) {
+          socket.unshift(remaining)
+        }
+        return false
+      }
+
+      if (remaining.length > 0) {
+        socket.unshift(remaining)
+        return false
+      }
+    }
+
+    return true
+  }
+
+  completeDirectBody () {
+    const { milo } = this
+
+    if (currentBuffer.buffer !== milo.memory.buffer) {
+      currentBuffer = new FastBuffer(
+        milo.memory.buffer,
+        currentBufferPtr,
+        currentBufferSize
+      )
+      this.updateBuffers()
+    } else if (this.parserEvents.buffer !== milo.memory.buffer) {
+      this.updateBuffers()
+    }
+
+    this.directBodyCompletePending = false
+    currentBufferRef = EMPTY_BUF
+
+    milo.complete(this.parser)
+    this.drainEvents()
+  }
+
+  setShouldSkipBody (value) {
+    if (this.skipBody !== value) {
+      this.skipBody = value
+      this.milo.setShouldSkipBody(this.parser, value)
+    }
+  }
+
+  finish () {
+    if (!this.parser) {
+      return null
+    }
+
+    if (this.directBodyRemaining > 0) {
+      return new ResponseContentLengthMismatchError()
+    }
+
+    if (this.parserEvents.buffer !== this.milo.memory.buffer) {
+      this.updateBuffers()
+    }
+
+    this.milo.finish(this.parser)
+    this.drainEvents()
+
+    if (!this.errored) {
+      return null
+    }
+
+    return this.createError(EMPTY_BUF)
+  }
+
+  createError (data) {
+    const { contentLength, bytesRead } = this
+
+    if (contentLength !== -1 && bytesRead !== contentLength) {
+      return new ResponseContentLengthMismatchError()
+    }
+
+    const errorCode = this.parserFields[this.milo.ParserFields.ERROR_CODE]
+    const errorName = this.milo.Errors[errorCode]
+    const errorDescription =
+      errorName === 'UNEXPECTED_EOF'
+        ? 'Invalid EOF state'
+        : this.milo.getErrorDescription(this.parser)
+    const reason =
+      errorName === 'UNEXPECTED_EOF'
+        ? errorDescription
+        : errorDescription
+          ? `[ERROR_${errorName}] ${errorDescription}`
+          : `ERROR_${errorName}`
+    return new HTTPParserError(
+      `Response does not match the HTTP/1.1 protocol (${reason})`,
+      errorName,
+      data
+    )
+  }
+
+  destroy () {
+    if (this.parser) {
+      this.milo.destroy(this.parser)
+      this.parser = null
+    }
+
+    this.timeout && timers.clearTimeout(this.timeout)
+    this.timeout = null
+    this.timeoutValue = null
+    this.timeoutType = null
+    this.paused = false
+    this.responseStarted = false
+    this.pausedByParser = false
+    this.pauseStateIsStart = false
+    this.connection = ''
+    this.skipBody = false
+  }
+
+  pauseParser (stateIsStart = false) {
+    this.milo.pause(this.parser)
+    this.pausedByParser = true
+    this.pauseStateIsStart = stateIsStart
+  }
+
+  drainEvents () {
+    const { socket, client, milo } = this
+    let cursor = 0
+
+    const firstEvent = this.parserEvents[0]
+    if (
+      firstEvent !== milo.EVENT_END &&
+      firstEvent !== milo.EVENT_ERROR &&
+      !this.responseStarted
+    ) {
+      this.responseStarted = true
+
+      if (socket.destroyed) {
+        return this.fail(this.milo.ERROR_CALLBACK_ERROR, 'Other side closed')
+      }
+
+      const request = client[kQueue][client[kRunningIdx]]
+      if (!request) {
+        return this.fail(this.milo.ERROR_CALLBACK_ERROR, 'Missing request')
+      }
+
+      request.onResponseStarted()
+    }
+
+    for (;;) {
+      const event = this.parserEvents[cursor]
+      let eventLen = EVENT_RANGE_SIZE
+      switch (event) {
+        case milo.EVENT_END:
+          return
+        case milo.EVENT_ERROR:
+          this.errored = true
+          return
+        case milo.EVENT_MESSAGE_COMPLETE: {
+          const {
+            client,
+            socket,
+            statusCode,
+            upgrade,
+            trailers,
+            contentLength,
+            bytesRead,
+            shouldKeepAlive
+          } = this
+
+          this.responseStarted = false
+
+          if (socket.destroyed && (!statusCode || shouldKeepAlive)) {
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Other side closed')
+          }
+
+          if (upgrade) {
+            this.pauseParser()
+            return
+          }
+
+          assert(statusCode >= 100)
+
+          const request = client[kQueue][client[kRunningIdx]]
+          assert(request)
+
+          this.statusCode = 0
+          this.statusText = ''
+          this.bytesRead = 0
+          this.contentLength = -1
+          this.directBodyRemaining = 0
+          this.directBodyCompletePending = false
+          this.headersSuspended = false
+          this.skipBody = false
+          this.keepAlive = ''
+          this.connection = ''
+          this.trailers = []
+          this.trailersSize = 0
+
+          if (statusCode < 200) {
+            break
+          }
+
+          if (
+            request.method !== 'HEAD' &&
+            contentLength !== -1 &&
+            bytesRead !== contentLength
+          ) {
+            util.destroy(socket, new ResponseContentLengthMismatchError())
+            this.pauseParser()
+            break
+          }
+
+          request.onResponseEnd(trailers)
+
+          client[kQueue][client[kRunningIdx]++] = null
+
+          if (socket[kWriting]) {
+            assert(client[kRunning] === 0)
+            util.destroy(socket, new InformationalError('reset'))
+            this.pauseParser(true)
+          } else if (!shouldKeepAlive) {
+            util.destroy(socket, new InformationalError('reset'))
+            this.pauseParser(true)
+          } else if (socket[kReset] && client[kRunning] === 0) {
+            util.destroy(socket, new InformationalError('reset'))
+            this.pauseParser(true)
+          } else if (client[kPipelining] == null || client[kPipelining] === 1) {
+            setImmediate(client[kResume])
+          } else {
+            client[kResume]()
+          }
+
+          break
+        }
+        case milo.EVENT_REASON: {
+          const at = this.parserEvents.readUInt32LE(cursor + 1)
+          const len = this.parserEvents.readUInt32LE(cursor + 5)
+          this.statusText = new FastBuffer(
+            currentBufferRef.buffer,
+            currentBufferRef.byteOffset + at,
+            len
+          ).toString()
+          break
+        }
+        case milo.EVENT_HEADER_NAME: {
+          const at = this.parserEvents.readUInt32LE(cursor + 1)
+          const len = this.parserEvents.readUInt32LE(cursor + 5)
+          const data =
+            len > 0
+              ? new FastBuffer(
+                currentBufferRef.buffer,
+                currentBufferRef.byteOffset + at,
+                len
+              )
+              : EMPTY_BUF
+
+          this.headers.push(data)
+          this.headersSize += len
+          if (this.headersSize >= this.headersMaxSize) {
+            util.destroy(this.socket, new HeadersOverflowError())
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Headers overflow')
+          }
+
+          break
+        }
+        case milo.EVENT_HEADER_VALUE: {
+          const at = this.parserEvents.readUInt32LE(cursor + 1)
+          const len = this.parserEvents.readUInt32LE(cursor + 5)
+          const data =
+            len > 0
+              ? new FastBuffer(
+                currentBufferRef.buffer,
+                currentBufferRef.byteOffset + at,
+                len
+              )
+              : EMPTY_BUF
+          const key = this.headers[this.headers.length - 1]
+
+          this.headers.push(data)
+
+          if (key.length === 10) {
+            const headerName = util.bufferToLowerCasedHeaderName(key)
+            if (headerName === 'keep-alive') {
+              this.keepAlive += (this.keepAlive.length === 0 ? '' : ',') + data.toString()
+            } else if (headerName === 'connection') {
+              this.connection += (this.connection.length === 0 ? '' : ',') + data.toString()
+            }
+          }
+
+          this.headersSize += len
+          if (this.headersSize >= this.headersMaxSize) {
+            util.destroy(this.socket, new HeadersOverflowError())
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Headers overflow')
+          }
+
+          break
+        }
+        case milo.EVENT_HEADERS: {
+          eventLen = EVENT_HEADERS_SIZE
+
+          const statusCode = this.parserEvents.readUInt16LE(cursor + 5)
+          const shouldKeepAlive = this.parserEvents[cursor + 7] !== 0
+          const shouldUpgrade = this.parserEvents[cursor + 8] !== 0
+          const hasTrailers = this.parserEvents[cursor + 9] !== 0
+          const bodyKind = this.parserEvents[cursor + 10]
+          const contentLength =
+            this.parserEvents.readUInt32LE(cursor + 11) +
+            this.parserEvents.readUInt32LE(cursor + 15) * 0x100000000
+
+          const { socket, client, headers, statusText } = this
+
+          if (socket.destroyed) {
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Other side closed')
+          }
+
+          const request = client[kQueue][client[kRunningIdx]]
+          if (!request) {
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Missing request')
+          }
+
+          assert(!this.upgrade)
+          assert(this.statusCode < 200)
+
+          if (statusCode === 100) {
+            util.destroy(
+              socket,
+              new SocketError('bad response', util.getSocketInfo(socket))
+            )
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Bad response')
+          }
+
+          if (shouldUpgrade && !request.upgrade) {
+            util.destroy(
+              socket,
+              new SocketError('bad upgrade', util.getSocketInfo(socket))
+            )
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Bad upgrade')
+          }
+
+          assert(this.timeoutType === TIMEOUT_HEADERS)
+
+          this.statusCode = statusCode
+          this.shouldKeepAlive =
+            shouldKeepAlive ||
+            (request.method === 'HEAD' &&
+              !socket[kReset] &&
+              /(?:^|,)[\t ]*keep-alive[\t ]*(?:,|$)/i.test(this.connection) &&
+              !/(?:^|,)[\t ]*close[\t ]*(?:,|$)/i.test(this.connection))
+          this.contentLength =
+            bodyKind === BODY_KIND_CONTENT_LENGTH ? contentLength : -1
+
+          if (this.statusCode >= 200) {
+            const bodyTimeout =
+              request.bodyTimeout != null
+                ? request.bodyTimeout
+                : client[kBodyTimeout]
+            this.setTimeout(bodyTimeout, TIMEOUT_BODY)
+          } else if (this.timeout?.refresh) {
+            this.timeout.refresh()
+          }
+
+          if (request.method === 'CONNECT') {
+            assert(client[kRunning] === 1)
+            milo.setIsConnect(this.parser, true)
+            this.upgrade = true
+            return
+          }
+
+          if (shouldUpgrade) {
+            assert(client[kRunning] === 1)
+            this.upgrade = true
+            this.pauseParser()
+            return
+          }
+
+          this.headers = []
+          this.headersSize = 0
+
+          if (this.shouldKeepAlive && client[kPipelining]) {
+            const keepAliveTimeout = this.keepAlive
+              ? util.parseKeepAliveTimeout(this.keepAlive)
+              : null
+
+            if (keepAliveTimeout != null) {
+              const timeout = Math.min(
+                keepAliveTimeout - client[kKeepAliveTimeoutThreshold],
+                client[kKeepAliveMaxTimeout]
+              )
+              if (timeout <= 0) {
+                socket[kReset] = true
+              } else {
+                client[kKeepAliveTimeoutValue] = timeout
+              }
+            } else {
+              client[kKeepAliveTimeoutValue] = client[kKeepAliveDefaultTimeout]
+            }
+          } else {
+            socket[kReset] = true
+          }
+
+          const pause =
+            request.onResponseStart(
+              statusCode,
+              headers,
+              this.resume,
+              statusText
+            ) === false
+
+          if (request.aborted) {
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Request aborted')
+          }
+
+          if (request.method === 'HEAD' || statusCode < 200) {
+            this.setShouldSkipBody(true)
+          }
+
+          this.headersSuspended = true
+          if (
+            !pause &&
+            request.method !== 'HEAD' &&
+            statusCode >= 200 &&
+            statusCode !== 204 &&
+            statusCode !== 205 &&
+            statusCode !== 304 &&
+            bodyKind === BODY_KIND_CONTENT_LENGTH &&
+            contentLength > 0 &&
+            !hasTrailers
+          ) {
+            this.directBodyRemaining = contentLength
+          }
+
+          if (socket[kBlocking]) {
+            socket[kBlocking] = false
+            client[kResume]()
+          }
+
+          if (pause) {
+            this.pauseParser()
+            this[kPausedByHandler] = true
+          } else if (
+            request.method === 'HEAD' ||
+            statusCode < 200 ||
+            statusCode === 204 ||
+            statusCode === 205 ||
+            statusCode === 304 ||
+            (bodyKind === BODY_KIND_CONTENT_LENGTH && contentLength === 0)
+          ) {
+            this.directBodyCompletePending = true
+          }
+
+          break
+        }
+        case milo.EVENT_DATA: {
+          const at = this.parserEvents.readUInt32LE(cursor + 1)
+          const len = this.parserEvents.readUInt32LE(cursor + 5)
+          const { client, socket, statusCode, maxResponseSize } = this
+
+          if (socket.destroyed) {
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Other side closed')
+          }
+
+          const request = client[kQueue][client[kRunningIdx]]
+          assert(request)
+          assert(this.timeoutType === TIMEOUT_BODY)
+
+          if (this.timeout?.refresh) {
+            this.timeout.refresh()
+          }
+
+          assert(statusCode >= 200)
+
+          if (maxResponseSize > -1 && this.bytesRead + len > maxResponseSize) {
+            util.destroy(socket, new ResponseExceededMaxSizeError())
+            return this.fail(
+              milo.ERROR_CALLBACK_ERROR,
+              'Response size exceeded'
+            )
+          }
+
+          this.bytesRead += len
+
+          const buffer = currentBufferRef
+          if (
+            request.onResponseData(
+              new FastBuffer(buffer.buffer, buffer.byteOffset + at, len)
+            ) === false
+          ) {
+            this.pauseParser()
+            this[kPausedByHandler] = true
+          }
+
+          break
+        }
+        case milo.EVENT_TRAILER_NAME: {
+          const at = this.parserEvents.readUInt32LE(cursor + 1)
+          const len = this.parserEvents.readUInt32LE(cursor + 5)
+          const data =
+            len > 0
+              ? new FastBuffer(
+                currentBufferRef.buffer,
+                currentBufferRef.byteOffset + at,
+                len
+              )
+              : EMPTY_BUF
+
+          this.trailers.push(data)
+
+          this.trailersSize += len
+          if (this.trailersSize >= this.headersMaxSize) {
+            util.destroy(this.socket, new HeadersOverflowError())
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Headers overflow')
+          }
+
+          break
+        }
+        case milo.EVENT_TRAILER_VALUE: {
+          const at = this.parserEvents.readUInt32LE(cursor + 1)
+          const len = this.parserEvents.readUInt32LE(cursor + 5)
+          const data =
+            len > 0
+              ? new FastBuffer(
+                currentBufferRef.buffer,
+                currentBufferRef.byteOffset + at,
+                len
+              )
+              : EMPTY_BUF
+
+          this.trailers.push(data)
+
+          this.trailersSize += len
+          if (this.trailersSize >= this.headersMaxSize) {
+            util.destroy(this.socket, new HeadersOverflowError())
+            return this.fail(milo.ERROR_CALLBACK_ERROR, 'Headers overflow')
+          }
+
+          break
+        }
+        default:
+          return
+      }
+
+      cursor += eventLen
+    }
+  }
+
+  fail (code, message) {
+    this.milo.fail(this.parser, code, message)
+    this.errored = true
+  }
+
+  onUpgrade (head) {
+    const { upgrade, client, socket, headers, statusCode } = this
+
+    assert(upgrade)
+    assert(client[kSocket] === socket)
+    assert(!socket.destroyed)
+    assert(!this.paused)
+
+    const request = client[kQueue][client[kRunningIdx]]
+    assert(request)
+    assert(request.upgrade || request.method === 'CONNECT')
+
+    this.statusCode = 0
+    this.statusText = ''
+    this.shouldKeepAlive = false
+    this.headers = []
+    this.headersSize = 0
+
+    socket.unshift(head)
+    socket[kParser].destroy()
+    socket[kParser] = null
+    socket[kClient] = null
+    socket[kError] = null
+
+    removeAllListeners(socket)
+
+    client[kSocket] = null
+    client[kHTTPContext] = null
+    client[kQueue][client[kRunningIdx]++] = null
+    client.emit(
+      'disconnect',
+      client[kUrl],
+      [client],
+      new InformationalError('upgrade')
+    )
+
+    try {
+      request.onRequestUpgrade(statusCode, headers, socket)
+    } catch (err) {
+      util.destroy(socket, err)
+    }
+
+    client[kResume]()
+  }
+}
+
+function setMiloEnabled (value) {
+  miloEnabled = value
+}
+
+function getMiloEnabled () {
+  return miloEnabled
+}
+
+module.exports = { H1Parser, getMiloEnabled, setMiloEnabled }
+
+
+/***/ }),
+
+/***/ 2860:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+const { PoolStats } = __nccwpck_require__(1370)
+const DispatcherBase = __nccwpck_require__(1949)
+const FixedQueue = __nccwpck_require__(7064)
+const { kConnected, kSize, kRunning, kPending, kQueued, kBusy, kFree, kUrl, kClose, kDestroy, kDispatch } = __nccwpck_require__(3599)
 
 const kClients = Symbol('clients')
 const kNeedDrain = Symbol('needDrain')
@@ -22767,10 +23276,32 @@ const kOnDrain = Symbol('onDrain')
 const kOnConnect = Symbol('onConnect')
 const kOnDisconnect = Symbol('onDisconnect')
 const kOnConnectionError = Symbol('onConnectionError')
+const kOnClientBusy = Symbol('on client busy')
+const kOnClientDrain = Symbol('on client drain')
+const kDrainQueue = Symbol('drain queue')
 const kGetDispatcher = Symbol('get dispatcher')
 const kHasDispatcher = Symbol('has dispatcher')
 const kAddClient = Symbol('add client')
 const kRemoveClient = Symbol('remove client')
+const kRetireClient = Symbol('retire client')
+const kRetiring = Symbol('retiring clients')
+
+// Closes every live client, including clients that have been
+// taken out of rotation but are still finishing their own
+// requests.
+function closeClients (pool) {
+  const closeAll = []
+  for (let i = 0; i < pool[kClients].length; i++) {
+    const client = pool[kClients][i]
+    if (!client.destroyed) {
+      closeAll.push(client.close())
+    }
+  }
+  for (const closed of pool[kRetiring].values()) {
+    closeAll.push(closed)
+  }
+  return Promise.all(closeAll)
+}
 
 class PoolBase extends DispatcherBase {
   [kQueue] = new FixedQueue();
@@ -22779,12 +23310,21 @@ class PoolBase extends DispatcherBase {
 
   [kClients] = [];
 
+  // Clients removed from kClients that have not finished closing,
+  // mapped to a promise that settles once they have.
+  [kRetiring] = new Map();
+
   [kNeedDrain] = false;
 
   [kOnDrain] (client, origin, targets) {
-    const queue = this[kQueue]
+    if (client.closed || client.destroyed) {
+      return
+    }
 
+    const queue = this[kQueue]
     let needDrain = false
+
+    this[kOnClientDrain](client)
 
     while (!needDrain) {
       const item = queue.shift()
@@ -22796,6 +23336,18 @@ class PoolBase extends DispatcherBase {
     }
 
     client[kNeedDrain] = needDrain
+    if (needDrain) {
+      this[kOnClientBusy](client)
+
+      // This client is full but requests are still queued, e.g. an h2
+      // client that has just released everything queued while ALPN was
+      // negotiated and hit maxConcurrentStreams. Hand the rest to other
+      // clients, creating new ones up to the connection limit, instead of
+      // leaving them for this client to drain one batch at a time.
+      if (!queue.isEmpty()) {
+        return this[kDrainQueue](origin, targets)
+      }
+    }
 
     if (!needDrain && this[kNeedDrain]) {
       this[kNeedDrain] = false
@@ -22803,15 +23355,45 @@ class PoolBase extends DispatcherBase {
     }
 
     if (this[kClosedResolve] && queue.isEmpty()) {
-      const closeAll = []
-      for (let i = 0; i < this[kClients].length; i++) {
-        const client = this[kClients][i]
-        if (!client.destroyed) {
-          closeAll.push(client.close())
+      return closeClients(this).then(this[kClosedResolve])
+    }
+  }
+
+  [kOnClientBusy] () {}
+
+  [kOnClientDrain] () {}
+
+  [kDrainQueue] (origin, targets) {
+    const queue = this[kQueue]
+    let hasDispatcher = true
+
+    while (!queue.isEmpty()) {
+      const dispatcher = this[kGetDispatcher]()
+      if (!dispatcher) {
+        hasDispatcher = false
+        break
+      }
+
+      const item = queue.shift()
+      this[kQueued]--
+
+      if (!dispatcher.dispatch(item.opts, item.handler)) {
+        dispatcher[kNeedDrain] = true
+        this[kOnClientBusy](dispatcher)
+        hasDispatcher = this[kHasDispatcher]()
+        if (!hasDispatcher) {
+          break
         }
       }
-      return Promise.all(closeAll)
-        .then(this[kClosedResolve])
+    }
+
+    if (hasDispatcher && this[kNeedDrain]) {
+      this[kNeedDrain] = false
+      this.emit('drain', origin, [this, ...targets])
+    }
+
+    if (this[kClosedResolve] && queue.isEmpty()) {
+      return closeClients(this).then(this[kClosedResolve])
     }
   }
 
@@ -22877,14 +23459,7 @@ class PoolBase extends DispatcherBase {
 
   [kClose] () {
     if (this[kQueue].isEmpty()) {
-      const closeAll = []
-      for (let i = 0; i < this[kClients].length; i++) {
-        const client = this[kClients][i]
-        if (!client.destroyed) {
-          closeAll.push(client.close())
-        }
-      }
-      return Promise.all(closeAll)
+      return closeClients(this)
     } else {
       return new Promise((resolve) => {
         this[kClosedResolve] = resolve
@@ -22905,6 +23480,9 @@ class PoolBase extends DispatcherBase {
     for (let i = 0; i < this[kClients].length; i++) {
       destroyAll[i] = this[kClients][i].destroy(err)
     }
+    for (const client of this[kRetiring].keys()) {
+      destroyAll.push(client.destroy(err))
+    }
     return Promise.all(destroyAll)
   }
 
@@ -22917,6 +23495,7 @@ class PoolBase extends DispatcherBase {
       this[kQueued]++
     } else if (!dispatcher.dispatch(opts, handler)) {
       dispatcher[kNeedDrain] = true
+      this[kOnClientBusy](dispatcher)
       this[kNeedDrain] = !this[kHasDispatcher]()
     }
 
@@ -22950,7 +23529,7 @@ class PoolBase extends DispatcherBase {
 
     if (this[kNeedDrain]) {
       queueMicrotask(() => {
-        if (this[kNeedDrain]) {
+        if (this[kNeedDrain] && !client[kNeedDrain]) {
           this[kOnDrain](client, client[kUrl], [client, this])
         }
       })
@@ -22959,13 +23538,37 @@ class PoolBase extends DispatcherBase {
     return this
   }
 
-  [kRemoveClient] (client) {
+  // Takes a client out of rotation. A closed client no longer takes requests
+  // from the pool queue (see kOnDrain), but it finishes the requests it
+  // already has. Until it has, pool.close() waits for it and pool.destroy()
+  // destroys it.
+  [kRetireClient] (client) {
     const idx = this[kClients].indexOf(client)
     if (idx !== -1) {
       this[kClients].splice(idx, 1)
     }
 
-    client.close(() => {})
+    if (client.destroyed || this[kRetiring].has(client)) {
+      return
+    }
+
+    // Use the callback form: custom dispatchers from `factory` are not
+    // required to return a promise, and may call back synchronously.
+    let done = false
+    let resolveClosed
+    const closed = new Promise((resolve) => { resolveClosed = resolve })
+    this[kRetiring].set(client, closed)
+    client.close(() => {
+      if (!done) {
+        done = true
+        this[kRetiring].delete(client)
+        resolveClosed()
+      }
+    })
+  }
+
+  [kRemoveClient] (client) {
+    this[kRetireClient](client)
 
     this[kNeedDrain] = !this[kClients].some(dispatcher => (
       !dispatcher[kNeedDrain] &&
@@ -22981,6 +23584,10 @@ module.exports = {
   kNeedDrain,
   kAddClient,
   kRemoveClient,
+  kRetireClient,
+  kDrainQueue,
+  kOnClientBusy,
+  kOnClientDrain,
   kGetDispatcher,
   kHasDispatcher
 }
@@ -22988,7 +23595,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 2472:
+/***/ 5704:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -22999,24 +23606,52 @@ const {
   kClients,
   kNeedDrain,
   kAddClient,
+  kDrainQueue,
+  kOnClientBusy,
+  kOnClientDrain,
   kGetDispatcher,
   kHasDispatcher,
-  kRemoveClient
-} = __nccwpck_require__(7852)
-const Client = __nccwpck_require__(3681)
+  kRemoveClient,
+  kRetireClient
+} = __nccwpck_require__(2860)
+const Client = __nccwpck_require__(7057)
 const {
   InvalidArgumentError
-} = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { kUrl } = __nccwpck_require__(9087)
-const buildConnector = __nccwpck_require__(6132)
+} = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
+const { kConnecting, kHTTPContext, kUrl, kQueued } = __nccwpck_require__(3599)
+const buildConnector = __nccwpck_require__(5140)
 
 const kOptions = Symbol('options')
 const kConnections = Symbol('connections')
 const kFactory = Symbol('factory')
+const kProtocol = Symbol('protocol')
+const kProtocolProbe = Symbol('protocol probe')
 
 function defaultFactory (origin, opts) {
   return new Client(origin, opts)
+}
+
+function shouldCreateProtocolProbe (pool, dispatcher) {
+  return dispatcher instanceof Client &&
+    pool[kProtocol] !== 'h1' &&
+    (pool[kOptions].useH2c === true || (pool[kUrl].protocol === 'https:' && pool[kOptions].allowH2 !== false))
+}
+
+function createClient (pool) {
+  const dispatcher = pool[kFactory](pool[kUrl], pool[kOptions])
+
+  // HTTPS does not reveal whether the peer selected h1 or h2 until ALPN
+  // completes. While h2 is still possible, let one Client probe the protocol
+  // and keep later requests in the Pool queue instead of opening one TLS
+  // connection per request. A confirmed h1 connection disables this gate and
+  // restores the usual Pool fan-out.
+  if (shouldCreateProtocolProbe(pool, dispatcher)) {
+    pool[kProtocolProbe] = dispatcher
+  }
+
+  pool[kAddClient](dispatcher)
+  return dispatcher
 }
 
 class Pool extends PoolBase {
@@ -23066,6 +23701,8 @@ class Pool extends PoolBase {
     this[kUrl] = util.parseOrigin(origin)
     this[kOptions] = { ...util.deepClone(options), connect, allowH2, useH2c, clientTtl, socketPath }
     this[kFactory] = factory
+    this[kProtocol] = null
+    this[kProtocolProbe] = null
 
     this.on('connect', (origin, targets) => {
       if (clientTtl != null && clientTtl > 0) {
@@ -23073,21 +23710,72 @@ class Pool extends PoolBase {
           Object.assign(target, { ttl: Date.now() })
         }
       }
+
+      const client = targets[targets.length - 1]
+      if (client instanceof Client) {
+        this[kProtocol] = client[kHTTPContext]?.version
+      }
+
+      if (client === this[kProtocolProbe]) {
+        // An h2 Client's drain event releases the requests accumulated during
+        // negotiation onto that Client. If ALPN selected h1, release the probe
+        // immediately and restore normal Pool fan-out instead.
+        if (this[kProtocol] !== 'h2') {
+          this[kProtocolProbe] = null
+          this[kDrainQueue](origin, targets.slice(1))
+        }
+      }
     })
 
-    this.on('connectionError', (origin, targets, error) => {
+    this.on('disconnect', (origin, targets) => {
+      if (targets.includes(this[kProtocolProbe])) {
+        this[kProtocolProbe] = null
+        this[kDrainQueue](origin, targets.slice(1))
+      }
+    })
+
+    this.on('connectionError', (origin, targets) => {
+      let resumeQueued = false
+
       // If a connection error occurs, we remove the client from the pool,
       // and emit a connectionError event. They will not be re-used.
       // Fixes https://github.com/nodejs/undici/issues/3895
       for (const target of targets) {
-        // Do not use kRemoveClient here, as it will close the client,
-        // but the client cannot be closed in this state.
-        const idx = this[kClients].indexOf(target)
-        if (idx !== -1) {
-          this[kClients].splice(idx, 1)
+        if (target === this[kProtocolProbe]) {
+          this[kProtocolProbe] = null
+          resumeQueued = true
+        }
+
+        // Retire (close) the client rather than only dropping it from
+        // kClients: otherwise its drain listener keeps pulling requests from
+        // the pool queue onto a client that pool.destroy() can't reach.
+        if (this[kClients].includes(target)) {
+          this[kRetireClient](target)
         }
       }
+
+      // The retired client no longer drains the pool queue, so hand any
+      // queued requests to another (possibly new) client.
+      if (resumeQueued || this[kQueued] > 0) {
+        this[kDrainQueue](origin, targets.slice(1))
+      }
     })
+  }
+
+  [kOnClientBusy] (client) {
+    if (
+      this[kProtocolProbe] === null &&
+      client[kConnecting] &&
+      shouldCreateProtocolProbe(this, client)
+    ) {
+      this[kProtocolProbe] = client
+    }
+  }
+
+  [kOnClientDrain] (client) {
+    if (client === this[kProtocolProbe]) {
+      this[kProtocolProbe] = null
+    }
   }
 
   [kGetDispatcher] () {
@@ -23104,10 +23792,12 @@ class Pool extends PoolBase {
       }
     }
 
+    if (this[kProtocolProbe] !== null) {
+      return
+    }
+
     if (!this[kConnections] || this[kClients].length < this[kConnections]) {
-      const dispatcher = this[kFactory](this[kUrl], this[kOptions])
-      this[kAddClient](dispatcher)
-      return dispatcher
+      return createClient(this)
     }
   }
 
@@ -23124,9 +23814,12 @@ class Pool extends PoolBase {
       }
     }
 
+    if (this[kProtocolProbe] !== null) {
+      return false
+    }
+
     if (!this[kConnections] || this[kClients].length < this[kConnections]) {
-      const dispatcher = this[kFactory](this[kUrl], this[kOptions])
-      this[kAddClient](dispatcher)
+      createClient(this)
       return true
     }
 
@@ -23139,21 +23832,22 @@ module.exports = Pool
 
 /***/ }),
 
-/***/ 3652:
+/***/ 4836:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { kProxy, kClose, kDestroy, kDispatch } = __nccwpck_require__(9087)
-const Agent = __nccwpck_require__(1361)
-const Pool = __nccwpck_require__(2472)
-const DispatcherBase = __nccwpck_require__(4717)
-const { InvalidArgumentError, RequestAbortedError, SecureProxyConnectionError, ProxyConnectionError } = __nccwpck_require__(39)
-const buildConnector = __nccwpck_require__(6132)
-const Client = __nccwpck_require__(3681)
-const { channels } = __nccwpck_require__(7170)
-const Socks5ProxyAgent = __nccwpck_require__(3387)
+const { kProxy, kClose, kDestroy, kDispatch } = __nccwpck_require__(3599)
+const Agent = __nccwpck_require__(3857)
+const Pool = __nccwpck_require__(5704)
+const DispatcherBase = __nccwpck_require__(1949)
+const { InvalidArgumentError, RequestAbortedError, SecureProxyConnectionError, ProxyConnectionError } = __nccwpck_require__(5767)
+const buildConnector = __nccwpck_require__(5140)
+const Client = __nccwpck_require__(7057)
+const { channels } = __nccwpck_require__(3906)
+const Socks5ProxyAgent = __nccwpck_require__(4475)
+const { hasSafeIterator } = __nccwpck_require__(6364)
 
 const kAgent = Symbol('proxy agent')
 const kClient = Symbol('proxy client')
@@ -23227,11 +23921,10 @@ class Http1ProxyWrapper extends DispatcherBase {
 
     opts.path = origin + path
 
-    if (!('host' in headers) && !('Host' in headers)) {
-      const { host } = new URL(origin)
-      headers.host = host
-    }
     opts.headers = { ...this[kProxyHeaders], ...headers }
+    if (!hasHostHeader(headers)) {
+      opts.headers.host = new URL(origin).host
+    }
 
     // Pin the SNI/cert hostname to the proxy. Without this the underlying
     // Client would derive it from the (rewritten) Host header, which points
@@ -23265,7 +23958,7 @@ class ProxyAgent extends DispatcherBase {
 
     const { proxyTunnel, connectTimeout } = opts
 
-    super()
+    super(opts)
 
     const url = this.#getUrl(opts)
     const { href, origin, port, protocol, username, password, hostname: proxyHostname } = url
@@ -23306,6 +23999,7 @@ class ProxyAgent extends DispatcherBase {
           factory: agentFactory,
           username: opts.username || username,
           password: opts.password || password,
+          connectTimeout,
           proxyTls: opts.proxyTls,
           requestTls: opts.requestTls
         })
@@ -23419,12 +24113,14 @@ class ProxyAgent extends DispatcherBase {
   }
 
   dispatch (opts, handler) {
-    const headers = buildHeaders(opts.headers)
+    let headers = buildHeaders(opts.headers)
     throwIfProxyAuthIsSent(headers)
 
-    if (headers && !('host' in headers) && !('Host' in headers)) {
-      const { host } = new URL(opts.origin)
-      headers.host = host
+    if (headers && !hasHostHeader(headers)) {
+      if (headers === opts.headers) {
+        headers = { ...headers }
+      }
+      headers.host = new URL(opts.origin).host
     }
 
     return this[kAgent].dispatch(
@@ -23468,8 +24164,8 @@ class ProxyAgent extends DispatcherBase {
 }
 
 /**
- * @param {string[] | Record<string, string>} headers
- * @returns {Record<string, string>}
+ * @param {string[] | Record<string, string> | Iterable<[string, string | string[] | undefined]>} headers
+ * @returns {Record<string, string | string[] | undefined>}
  */
 function buildHeaders (headers) {
   // When using undici.fetch, the headers list is stored
@@ -23484,6 +24180,34 @@ function buildHeaders (headers) {
       }
 
       headersPair[headers[i]] = headers[i + 1]
+    }
+
+    return headersPair
+  }
+
+  // Materialize iterable header containers (e.g. Map, Headers) into a record so
+  // that throwIfProxyAuthIsSent() can inspect their entries. Object.keys and
+  // for...in see nothing on a Map/Headers instance, so without this the
+  // Proxy-Authorization guard is bypassed and proxy credentials can reach the
+  // origin server (GHSA-6cv7-626c-qhqw).
+  if (headers && typeof headers === 'object' && hasSafeIterator(headers)) {
+    const headersPair = {}
+
+    for (const [key, value] of headers) {
+      if (!Object.hasOwn(headersPair, key)) {
+        headersPair[key] = value
+        continue
+      }
+
+      const previous = headersPair[key]
+      const values = []
+      if (previous !== undefined) {
+        values.push(...(Array.isArray(previous) ? previous : [previous]))
+      }
+      if (value !== undefined) {
+        values.push(...(Array.isArray(value) ? value : [value]))
+      }
+      headersPair[key] = values.length > 1 ? values : values[0]
     }
 
     return headersPair
@@ -23516,6 +24240,15 @@ function isProxyAuthorizationHeader (key) {
   return key.length === proxyAuthorization.length && key.toLowerCase() === proxyAuthorization
 }
 
+function hasHostHeader (headers) {
+  for (const key in headers) {
+    if (key.length === 4 && key.toLowerCase() === 'host') {
+      return true
+    }
+  }
+  return false
+}
+
 function throwProxyAuthError () {
   throw new InvalidArgumentError('Proxy-Authorization should be sent in ProxyAgent constructor')
 }
@@ -23525,14 +24258,15 @@ module.exports = ProxyAgent
 
 /***/ }),
 
-/***/ 4046:
+/***/ 1854:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const Dispatcher = __nccwpck_require__(1319)
-const RetryHandler = __nccwpck_require__(1684)
+const Dispatcher = __nccwpck_require__(4727)
+const RetryHandler = __nccwpck_require__(1972)
+const { kOriginless, kUrl } = __nccwpck_require__(3599)
 
 class RetryAgent extends Dispatcher {
   #agent = null
@@ -23541,6 +24275,8 @@ class RetryAgent extends Dispatcher {
     super(options)
     this.#agent = agent
     this.#options = options
+    this[kUrl] = agent[kUrl]
+    this[kOriginless] = agent[kOriginless]
   }
 
   dispatch (opts, handler) {
@@ -23552,6 +24288,16 @@ class RetryAgent extends Dispatcher {
       handler
     })
     return this.#agent.dispatch(opts, retry)
+  }
+
+  // WebSocket and EventSource read their receive limits from the dispatcher
+  // they are given, so report the wrapped agent's settings rather than none.
+  get webSocketOptions () {
+    return this.#agent.webSocketOptions
+  }
+
+  get eventSourceOptions () {
+    return this.#agent.eventSourceOptions
   }
 
   close () {
@@ -23568,7 +24314,7 @@ module.exports = RetryAgent
 
 /***/ }),
 
-/***/ 660:
+/***/ 1108:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -23581,15 +24327,17 @@ const {
   kAddClient,
   kGetDispatcher,
   kHasDispatcher,
-  kRemoveClient
-} = __nccwpck_require__(7852)
-const Client = __nccwpck_require__(3681)
+  kRemoveClient,
+  kRetireClient,
+  kDrainQueue
+} = __nccwpck_require__(2860)
+const Client = __nccwpck_require__(7057)
 const {
   InvalidArgumentError
-} = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { kUrl } = __nccwpck_require__(9087)
-const buildConnector = __nccwpck_require__(6132)
+} = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
+const { kUrl, kQueued } = __nccwpck_require__(3599)
+const buildConnector = __nccwpck_require__(5140)
 
 const kOptions = Symbol('options')
 const kConnections = Symbol('connections')
@@ -23639,7 +24387,7 @@ class RoundRobinPool extends PoolBase {
       })
     }
 
-    super()
+    super(options)
 
     this[kConnections] = connections || null
     this[kUrl] = util.parseOrigin(origin)
@@ -23656,11 +24404,19 @@ class RoundRobinPool extends PoolBase {
     })
 
     this.on('connectionError', (origin, targets, error) => {
+      // Retire (close) the client rather than only dropping it from
+      // kClients: otherwise its drain listener keeps pulling requests from
+      // the pool queue onto a client that pool.destroy() can't reach.
       for (const target of targets) {
-        const idx = this[kClients].indexOf(target)
-        if (idx !== -1) {
-          this[kClients].splice(idx, 1)
+        if (this[kClients].includes(target)) {
+          this[kRetireClient](target)
         }
+      }
+
+      // The retired client no longer drains the pool queue, so hand any
+      // queued requests to another (possibly new) client.
+      if (this[kQueued] > 0) {
+        this[kDrainQueue](origin, targets.slice(1))
       }
     })
   }
@@ -23735,7 +24491,7 @@ module.exports = RoundRobinPool
 
 /***/ }),
 
-/***/ 3387:
+/***/ 4475:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -23744,15 +24500,18 @@ module.exports = RoundRobinPool
 const { URL } = __nccwpck_require__(3136)
 
 let tls // include tls conditionally since it is not always available
-const DispatcherBase = __nccwpck_require__(4717)
-const { InvalidArgumentError } = __nccwpck_require__(39)
-const { Socks5Client, STATES } = __nccwpck_require__(4598)
-const { kBusy, kConnected, kDispatch, kClose, kDestroy } = __nccwpck_require__(9087)
-const Pool = __nccwpck_require__(2472)
-const buildConnector = __nccwpck_require__(6132)
+const DispatcherBase = __nccwpck_require__(1949)
+const { ConnectTimeoutError, InvalidArgumentError } = __nccwpck_require__(5767)
+const { Socks5Client, STATES } = __nccwpck_require__(9606)
+const { kBusy, kConnected, kDispatch, kClose, kDestroy } = __nccwpck_require__(3599)
+const Pool = __nccwpck_require__(5704)
+const buildConnector = __nccwpck_require__(5140)
+const { setupConnectTimeout } = __nccwpck_require__(6364)
 const { debuglog } = __nccwpck_require__(7975)
 
 const debug = debuglog('undici:socks5-proxy')
+
+const DEFAULT_SOCKS5_CONNECT_TIMEOUT = 5000
 
 const kProxyUrl = Symbol('proxy url')
 const kProxyHeaders = Symbol('proxy headers')
@@ -23760,7 +24519,15 @@ const kProxyAuth = Symbol('proxy auth')
 const kProxyProtocol = Symbol('proxy protocol')
 const kPools = Symbol('pools')
 const kConnector = Symbol('connector')
+const kConnectTimeout = Symbol('connect timeout')
 const kRequestTls = Symbol('request tls settings')
+const kRequestTlsTimeout = Symbol('request tls timeout')
+
+function createConnectTimeoutError (hostname, port, timeout) {
+  return new ConnectTimeoutError(
+    `Connect Timeout Error (attempted address: ${hostname}:${port}, timeout: ${timeout}ms)`
+  )
+}
 
 // Static flag to ensure warning is only emitted once per process
 let experimentalWarningEmitted = false
@@ -23770,7 +24537,7 @@ let experimentalWarningEmitted = false
  */
 class Socks5ProxyAgent extends DispatcherBase {
   constructor (proxyUrl, options = {}) {
-    super()
+    super(options)
 
     // Emit experimental warning only once
     if (!experimentalWarningEmitted) {
@@ -23795,7 +24562,20 @@ class Socks5ProxyAgent extends DispatcherBase {
     this[kProxyUrl] = url
     this[kProxyHeaders] = options.headers || {}
     this[kProxyProtocol] = options.proxyTls ? 'https:' : 'http:'
-    this[kRequestTls] = options.requestTls
+
+    const connectTimeout = options.connectTimeout ?? DEFAULT_SOCKS5_CONNECT_TIMEOUT
+    if (!Number.isFinite(connectTimeout) || connectTimeout < 0) {
+      throw new InvalidArgumentError('invalid connectTimeout')
+    }
+    this[kConnectTimeout] = connectTimeout
+
+    const { timeout, ...requestTls } = options.requestTls || {}
+    const requestTlsTimeout = timeout ?? connectTimeout
+    if (!Number.isFinite(requestTlsTimeout) || requestTlsTimeout < 0) {
+      throw new InvalidArgumentError('invalid requestTls.timeout')
+    }
+    this[kRequestTls] = requestTls
+    this[kRequestTlsTimeout] = requestTlsTimeout
 
     // Extract auth from URL or options
     this[kProxyAuth] = {
@@ -23804,8 +24584,13 @@ class Socks5ProxyAgent extends DispatcherBase {
     }
 
     // Create connector for proxy connection
+    const proxyTlsTimeout = options.proxyTls?.timeout ?? connectTimeout
+    if (!Number.isFinite(proxyTlsTimeout) || proxyTlsTimeout < 0) {
+      throw new InvalidArgumentError('invalid proxyTls.timeout')
+    }
     this[kConnector] = options.connect || buildConnector({
       ...options.proxyTls,
+      timeout: proxyTlsTimeout,
       servername: options.proxyTls?.servername || url.hostname
     })
 
@@ -23854,20 +24639,29 @@ class Socks5ProxyAgent extends DispatcherBase {
 
     // Wait for authentication (if required)
     const authenticationReady = Promise.withResolvers()
+    const authenticationTimeout = this[kConnectTimeout] === 0
+      ? null
+      : setTimeout(() => {
+        cleanupAuthenticationListeners()
+        socks5Client.destroy()
+        authenticationReady.reject(
+          createConnectTimeoutError(proxyHost, proxyPort, this[kConnectTimeout])
+        )
+      }, this[kConnectTimeout])
 
-    const authenticationTimeout = setTimeout(() => {
-      authenticationReady.reject(new Error('SOCKS5 authentication timeout'))
-    }, 5000)
+    const cleanupAuthenticationListeners = () => {
+      clearTimeout(authenticationTimeout)
+      socks5Client.removeListener('authenticated', onAuthenticated)
+      socks5Client.removeListener('error', onAuthenticationError)
+    }
 
     const onAuthenticated = () => {
-      clearTimeout(authenticationTimeout)
-      socks5Client.removeListener('error', onAuthenticationError)
+      cleanupAuthenticationListeners()
       authenticationReady.resolve()
     }
 
     const onAuthenticationError = (err) => {
-      clearTimeout(authenticationTimeout)
-      socks5Client.removeListener('authenticated', onAuthenticated)
+      cleanupAuthenticationListeners()
       authenticationReady.reject(err)
     }
 
@@ -23887,21 +24681,30 @@ class Socks5ProxyAgent extends DispatcherBase {
 
     // Wait for connection
     const connectionReady = Promise.withResolvers()
+    const connectionTimeout = this[kConnectTimeout] === 0
+      ? null
+      : setTimeout(() => {
+        cleanupConnectionListeners()
+        socks5Client.destroy()
+        connectionReady.reject(
+          createConnectTimeoutError(targetHost, targetPort, this[kConnectTimeout])
+        )
+      }, this[kConnectTimeout])
 
-    const connectionTimeout = setTimeout(() => {
-      connectionReady.reject(new Error('SOCKS5 connection timeout'))
-    }, 5000)
+    const cleanupConnectionListeners = () => {
+      clearTimeout(connectionTimeout)
+      socks5Client.removeListener('connected', onConnected)
+      socks5Client.removeListener('error', onConnectionError)
+    }
 
     const onConnected = (info) => {
       debug('SOCKS5 tunnel established to', targetHost, targetPort, 'via', info)
-      clearTimeout(connectionTimeout)
-      socks5Client.removeListener('error', onConnectionError)
+      cleanupConnectionListeners()
       connectionReady.resolve()
     }
 
     const onConnectionError = (err) => {
-      clearTimeout(connectionTimeout)
-      socks5Client.removeListener('connected', onConnected)
+      cleanupConnectionListeners()
       connectionReady.reject(err)
     }
 
@@ -23954,8 +24757,31 @@ class Socks5ProxyAgent extends DispatcherBase {
                 })
 
                 const tlsReady = Promise.withResolvers()
-                finalSocket.once('secureConnect', tlsReady.resolve)
-                finalSocket.once('error', tlsReady.reject)
+
+                const cleanupTlsListeners = () => {
+                  queueMicrotask(clearTlsTimeout)
+                  finalSocket.removeListener('secureConnect', onSecureConnect)
+                  finalSocket.removeListener('error', onTlsError)
+                }
+
+                const onSecureConnect = () => {
+                  cleanupTlsListeners()
+                  tlsReady.resolve()
+                }
+
+                const onTlsError = (err) => {
+                  cleanupTlsListeners()
+                  tlsReady.reject(err)
+                }
+
+                const clearTlsTimeout = setupConnectTimeout(new WeakRef(finalSocket), {
+                  timeout: this[kRequestTlsTimeout],
+                  hostname: targetHost,
+                  port: targetPort
+                })
+
+                finalSocket.once('secureConnect', onSecureConnect)
+                finalSocket.once('error', onTlsError)
                 await tlsReady.promise
               }
 
@@ -24023,7 +24849,7 @@ module.exports = Socks5ProxyAgent
 
 /***/ }),
 
-/***/ 5368:
+/***/ 360:
 /***/ ((module) => {
 
 "use strict";
@@ -24064,7 +24890,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1689:
+/***/ 9145:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -24074,9 +24900,9 @@ module.exports = {
 // this version number must be increased to avoid conflicts.
 const globalDispatcher = Symbol.for('undici.globalDispatcher.2')
 const legacyGlobalDispatcher = Symbol.for('undici.globalDispatcher.1')
-const { InvalidArgumentError } = __nccwpck_require__(39)
-const Agent = __nccwpck_require__(1361)
-const Dispatcher1Wrapper = __nccwpck_require__(1846)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
+const Agent = __nccwpck_require__(3857)
+const Dispatcher1Wrapper = __nccwpck_require__(9830)
 
 // Fallback storage for when globalThis is not extensible (e.g. frozen)
 let fallbackDispatcher
@@ -24154,13 +24980,14 @@ module.exports = {
 
 /***/ }),
 
-/***/ 3276:
+/***/ 9452:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const util = __nccwpck_require__(4108)
+const util = __nccwpck_require__(6364)
+const { kRedirectCacheControl } = __nccwpck_require__(3599)
 const {
   parseCacheControlHeader,
   hasInvalidCacheControlDirective,
@@ -24168,10 +24995,67 @@ const {
   hasVaryStar,
   isInvalidOrWildcardVaryHeader,
   isEtagUsable
-} = __nccwpck_require__(7527)
-const { parseHttpDate } = __nccwpck_require__(5041)
+} = __nccwpck_require__(3831)
+const { parseHttpDate } = __nccwpck_require__(5233)
 
 function noop () {}
+
+class CacheController {
+  #blocked = false
+  #downstreamPaused = false
+
+  constructor (target) {
+    this.target = target
+  }
+
+  block () {
+    this.#blocked = true
+  }
+
+  release () {
+    this.#blocked = false
+    if (!this.#downstreamPaused) {
+      this.target.resume()
+    }
+  }
+
+  pause () {
+    this.#downstreamPaused = true
+    this.target.pause()
+  }
+
+  resume () {
+    this.#downstreamPaused = false
+    if (!this.#blocked) {
+      this.target.resume()
+    }
+  }
+
+  abort (reason) {
+    this.target.abort(reason)
+  }
+
+  get paused () { return this.#downstreamPaused }
+  get aborted () { return this.target.aborted }
+  get reason () { return this.target.reason }
+  get rawHeaders () { return this.target.rawHeaders }
+  set rawHeaders (value) { this.target.rawHeaders = value }
+  get rawTrailers () { return this.target.rawTrailers }
+  set rawTrailers (value) { this.target.rawTrailers = value }
+}
+
+/**
+ * @param {string | URL} a
+ * @param {string | URL} b
+ * @returns {boolean}
+ */
+function sameOrigin (a, b) {
+  try {
+    return new URL(String(a)).origin === new URL(String(b)).origin
+  } catch {
+    return String(a) === String(b)
+  }
+}
 
 // Status codes that we can use some heuristics on to cache
 const HEURISTICALLY_CACHEABLE_STATUS_CODES = [
@@ -24310,9 +25194,22 @@ class CacheHandler {
   #handler
 
   /**
+   * @type {CacheController | undefined}
+   */
+  #downstreamController
+
+  /**
    * @type {import('node:stream').Writable | undefined}
    */
   #writeStream
+
+  /**
+   * The URLs visited while following redirects, shared by reference from the
+   * redirect handler through the request context. Carries the suppressed hops'
+   * cache-control under {@link kRedirectCacheControl}.
+   * @type {URL[] | undefined}
+   */
+  #history
 
   /**
    * @param {import('../../types/cache-interceptor.d.ts').default.CacheHandlerOptions} opts
@@ -24330,11 +25227,27 @@ class CacheHandler {
   onRequestStart (controller, context) {
     this.#writeStream?.destroy()
     this.#writeStream = undefined
-    this.#handler.onRequestStart?.(controller, context)
+    this.#downstreamController = new CacheController(controller)
+    // The redirect handler threads the list of visited URLs through the
+    // handler-chain context. Keep a reference to it (it is mutated as redirects
+    // are followed) so onResponseStart can tell which request actually produced
+    // the response. Unlike the request options object, this reference is not
+    // broken by an interceptor that copies the options between the cache and
+    // the redirect.
+    this.#history = context?.history
+    this.#handler.onRequestStart?.(this.#downstreamController, context)
   }
 
-  onRequestUpgrade (controller, statusCode, headers, socket) {
-    this.#handler.onRequestUpgrade?.(controller, statusCode, headers, socket)
+  onBodySent (chunk) {
+    this.#handler.onBodySent?.(chunk)
+  }
+
+  onRequestSent () {
+    this.#handler.onRequestSent?.()
+  }
+
+  onRequestUpgrade (_controller, statusCode, headers, socket) {
+    this.#handler.onRequestUpgrade?.(this.#downstreamController, statusCode, headers, socket)
   }
 
   /**
@@ -24351,7 +25264,7 @@ class CacheHandler {
   ) {
     const downstreamOnHeaders = () =>
       this.#handler.onResponseStart?.(
-        controller,
+        this.#downstreamController,
         statusCode,
         resHeaders,
         statusMessage
@@ -24369,7 +25282,43 @@ class CacheHandler {
       return downstreamOnHeaders()
     }
 
+    // A cross-origin redirect can change the origin that actually produced the
+    // final response. Keying that response on the original (trusted) origin
+    // would let a redirect target control an entry for a URL the application
+    // trusts. The final request is the last URL in the redirect history; only
+    // cache when its origin still matches the cache key origin.
+    if (this.#history && this.#history.length > 0) {
+      const finalUrl = this.#history[this.#history.length - 1]
+      if (!sameOrigin(finalUrl.origin, this.#cacheKey.origin)) {
+        return downstreamOnHeaders()
+      }
+    }
+
+    // A redirect hop that is not forwarded can still carry a restrictive
+    // storage policy (for example `no-store`, or `private` for a shared cache).
+    // Honor it, otherwise a redirect that must not be stored could be laundered
+    // into a cacheable final response under the original key.
+    const redirectCacheControl = this.#history?.[kRedirectCacheControl]
+    if (redirectCacheControl) {
+      for (const hopCacheControl of redirectCacheControl) {
+        const hopDirectives = hopCacheControl ? parseCacheControlHeader(hopCacheControl) : {}
+        if (
+          hopDirectives['no-store'] === true ||
+          (this.#cacheType === 'shared' && hopDirectives.private === true)
+        ) {
+          return downstreamOnHeaders()
+        }
+      }
+    }
+
     const cacheControlHeader = resHeaders['cache-control']
+    const cacheControlDirectives = cacheControlHeader ? parseCacheControlHeader(cacheControlHeader) : {}
+
+    if (revalidationResponseDisallowsCachedReuse(this.#cacheType, resHeaders, cacheControlDirectives)) {
+      deleteCachedValue(this.#store, this.#cacheKey)
+      return downstreamOnHeaders()
+    }
+
     const heuristicallyCacheable = resHeaders['last-modified'] && arrayIncludes(HEURISTICALLY_CACHEABLE_STATUS_CODES, statusCode)
     if (
       !cacheControlHeader &&
@@ -24386,8 +25335,7 @@ class CacheHandler {
       return downstreamOnHeaders()
     }
 
-    const cacheControlDirectives = cacheControlHeader ? parseCacheControlHeader(cacheControlHeader) : {}
-    if (!canCacheResponse(this.#cacheType, statusCode, resHeaders, cacheControlDirectives, this.#cacheKey.headers)) {
+    if (!canCacheResponse(this.#cacheType, this.#cacheKey.method, statusCode, resHeaders, cacheControlDirectives, this.#cacheKey.headers)) {
       if (statusCode === 304 && (cacheControlHeader || revalidationResponseDisallowsCachedReuse(this.#cacheType, resHeaders, cacheControlDirectives))) {
         deleteCachedValue(this.#store, this.#cacheKey)
       }
@@ -24469,10 +25417,21 @@ class CacheHandler {
     // Not modified, re-use the cached value
     // https://www.rfc-editor.org/rfc/rfc9111.html#name-handling-304-not-modified
     if (statusCode === 304) {
+      let done = false
+      const finish304 = () => {
+        if (done) {
+          return
+        }
+        done = true
+        this.#downstreamController.release()
+      }
+
       const handle304 = (cachedValue) => {
         if (!cachedValue) {
           // Do not create a new cache entry, as a 304 won't have a body - so cannot be cached.
-          return downstreamOnHeaders()
+          downstreamOnHeaders()
+          finish304()
+          return
         }
 
         // Re-use the cached value: statuscode, statusmessage, headers and body
@@ -24487,6 +25446,7 @@ class CacheHandler {
         this.#writeStream = this.#store.createWriteStream(this.#cacheKey, value)
 
         if (!this.#writeStream || !cachedValue?.body) {
+          finish304()
           return
         }
 
@@ -24494,20 +25454,26 @@ class CacheHandler {
           const bodyIterator = cachedValue.body.values()
 
           const streamCachedBody = () => {
+            if (done) {
+              return
+            }
             for (const chunk of bodyIterator) {
-              const full = this.#writeStream.write(chunk) === false
-              this.#handler.onResponseData?.(controller, chunk)
+              const full = this.#writeStream?.write(chunk) === false
+              this.#handler.onResponseData?.(this.#downstreamController, chunk)
               // when stream is full stop writing until we get a 'drain' event
               if (full) {
-                break
+                return
               }
             }
+            finish304()
           }
 
           this.#writeStream
             .on('error', function () {
               handler.#writeStream = undefined
               handler.#store.delete(handler.#cacheKey)
+              // Keep replaying downstream without the store
+              streamCachedBody()
             })
             .on('drain', () => {
               streamCachedBody()
@@ -24515,6 +25481,8 @@ class CacheHandler {
             .on('close', function () {
               if (handler.#writeStream === this) {
                 handler.#writeStream = undefined
+                // Keep replaying downstream without the store
+                streamCachedBody()
               }
             })
 
@@ -24523,15 +25491,17 @@ class CacheHandler {
           // Readable stream body (e.g. from async/remote cache stores)
           cachedValue.body
             .on('data', (chunk) => {
-              this.#writeStream.write(chunk)
-              this.#handler.onResponseData?.(controller, chunk)
+              this.#writeStream?.write(chunk)
+              this.#handler.onResponseData?.(this.#downstreamController, chunk)
             })
             .on('end', () => {
-              this.#writeStream.end()
+              this.#writeStream?.end()
+              finish304()
             })
             .on('error', () => {
               this.#writeStream = undefined
               this.#store.delete(this.#cacheKey)
+              finish304()
             })
 
           this.#writeStream
@@ -24544,6 +25514,8 @@ class CacheHandler {
                 handler.#writeStream = undefined
               }
             })
+        } else {
+          finish304()
         }
       }
 
@@ -24551,8 +25523,14 @@ class CacheHandler {
        * @type {import('../../types/cache-interceptor.d.ts').default.CacheValue}
        */
       const result = this.#store.get(this.#cacheKey)
+      // A 304 ends before the cached body is replayed. Keep the origin
+      // response paused until replay is complete.
+      this.#downstreamController.block()
+      controller.pause()
       if (result && typeof result.then === 'function') {
-        result.then(handle304)
+        result.then(handle304, () => handle304(undefined)).catch((err) => {
+          controller.abort(err)
+        })
       } else {
         handle304(result)
       }
@@ -24595,18 +25573,18 @@ class CacheHandler {
       controller.pause()
     }
 
-    this.#handler.onResponseData?.(controller, chunk)
+    this.#handler.onResponseData?.(this.#downstreamController, chunk)
   }
 
   onResponseEnd (controller, trailers) {
     this.#writeStream?.end()
-    this.#handler.onResponseEnd?.(controller, trailers)
+    this.#handler.onResponseEnd?.(this.#downstreamController, trailers)
   }
 
   onResponseError (controller, err) {
     this.#writeStream?.destroy(err)
     this.#writeStream = undefined
-    this.#handler.onResponseError?.(controller, err)
+    this.#handler.onResponseError?.(this.#downstreamController, err)
   }
 }
 
@@ -24636,7 +25614,10 @@ function deleteCachedValueIfNotModified (statusCode, store, cacheKey) {
  */
 function revalidationResponseDisallowsCachedReuse (cacheType, resHeaders, cacheControlDirectives) {
   return cacheControlDirectives['no-store'] === true ||
-    (cacheType === 'shared' && cacheControlDirectives.private === true) ||
+    (cacheType === 'shared' && (
+      cacheControlDirectives.private === true ||
+      Object.hasOwn(resHeaders, 'set-cookie')
+    )) ||
     (resHeaders.vary ? isInvalidOrWildcardVaryHeader(resHeaders.vary) : false)
 }
 
@@ -24644,12 +25625,16 @@ function revalidationResponseDisallowsCachedReuse (cacheType, resHeaders, cacheC
  * @see https://www.rfc-editor.org/rfc/rfc9111.html#name-storing-responses-to-authen
  *
  * @param {import('../../types/cache-interceptor.d.ts').default.CacheOptions['type']} cacheType
+ * @param {string} method
  * @param {number} statusCode
  * @param {import('../../types/header.d.ts').IncomingHttpHeaders} resHeaders
  * @param {import('../../types/cache-interceptor.d.ts').default.CacheControlDirectives} cacheControlDirectives
  * @param {import('../../types/header.d.ts').IncomingHttpHeaders} [reqHeaders]
  */
-function canCacheResponse (cacheType, statusCode, resHeaders, cacheControlDirectives, reqHeaders) {
+function canCacheResponse (cacheType, method, statusCode, resHeaders, cacheControlDirectives, reqHeaders) {
+  if (!arrayIncludes(util.safeHTTPMethods, method)) {
+    return false
+  }
   // Status code must be final and understood.
   if (statusCode < 200 || arrayIncludes(NOT_UNDERSTOOD_STATUS_CODES, statusCode)) {
     return false
@@ -24670,7 +25655,10 @@ function canCacheResponse (cacheType, statusCode, resHeaders, cacheControlDirect
     return false
   }
 
-  if (cacheType === 'shared' && cacheControlDirectives.private === true) {
+  if (cacheType === 'shared' && (
+    cacheControlDirectives.private === true ||
+    Object.hasOwn(resHeaders, 'set-cookie')
+  )) {
     return false
   }
 
@@ -24956,7 +25944,7 @@ module.exports = CacheHandler
 
 /***/ }),
 
-/***/ 9065:
+/***/ 6409:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -25098,7 +26086,7 @@ module.exports = CacheRevalidationHandler
 
 /***/ }),
 
-/***/ 4335:
+/***/ 9663:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -25166,19 +26154,25 @@ module.exports = class DecoratorHandler {
   /**
    * @deprecated
    */
-  onBodySent () {}
+  onBodySent (...args) {
+    return this.#handler.onBodySent?.(...args)
+  }
+
+  onRequestSent (...args) {
+    return this.#handler.onRequestSent?.(...args)
+  }
 }
 
 
 /***/ }),
 
-/***/ 3131:
+/***/ 5643:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { RequestAbortedError } = __nccwpck_require__(39)
+const { RequestAbortedError } = __nccwpck_require__(5767)
 
 /**
  * @typedef {import('../../types/dispatcher.d.ts').default.DispatchHandler} DispatchHandler
@@ -25194,6 +26188,7 @@ const DEFAULT_MAX_BUFFER_SIZE = 5 * 1024 * 1024
  * @property {number} bufferedBytes
  * @property {object | null} pendingTrailers
  * @property {boolean} done
+ * @property {boolean} [pendingStart] onRequestStart deferred until the primary request's context is known
  */
 
 /**
@@ -25207,6 +26202,20 @@ class DeduplicationHandler {
    * @type {DispatchHandler}
    */
   #primaryHandler
+
+  /**
+   * Whether the primary request has started (onRequestStart received). Until
+   * then the request context is unknown and cannot be given to waiting handlers.
+   * @type {boolean}
+   */
+  #requestStarted = false
+
+  /**
+   * The primary request context, replayed to waiting handlers so they observe
+   * the same redirect history as the primary.
+   * @type {any}
+   */
+  #context = null
 
   /**
    * @type {WaitingHandler[]}
@@ -25290,20 +26299,30 @@ class DeduplicationHandler {
     const waitingController = waitingHandler.controller
 
     try {
-      handler.onRequestStart?.(waitingController, null)
+      if (this.#requestStarted) {
+        // The primary request has started, so its context (including the
+        // redirect history) is known and can be delivered immediately.
+        handler.onRequestStart?.(waitingController, this.#context)
 
-      if (waitingController.aborted) {
-        waitingHandler.done = true
-        return true
-      }
+        if (waitingController.aborted) {
+          waitingHandler.done = true
+          return true
+        }
 
-      if (this.#responseStarted) {
-        handler.onResponseStart?.(
-          waitingController,
-          this.#statusCode,
-          this.#headers,
-          this.#statusMessage
-        )
+        if (this.#responseStarted) {
+          handler.onResponseStart?.(
+            waitingController,
+            this.#statusCode,
+            this.#headers,
+            this.#statusMessage
+          )
+        }
+      } else {
+        // The primary request has not started yet. Defer onRequestStart until
+        // its context is known, so the waiting handler observes the same
+        // redirect history as the primary (a cache handler relies on it to
+        // reject cross-origin redirect responses).
+        waitingHandler.pendingStart = true
       }
     } catch {
       // Ignore errors from waiting handlers
@@ -25324,6 +26343,24 @@ class DeduplicationHandler {
    */
   onRequestStart (controller, context) {
     this.#controller = controller
+    if (!this.#requestStarted) {
+      this.#requestStarted = true
+      this.#context = context
+      // Deliver the now-known context to handlers that joined before the
+      // primary request started.
+      for (const waitingHandler of this.#waitingHandlers) {
+        if (waitingHandler.pendingStart && !waitingHandler.done && !waitingHandler.controller.aborted) {
+          waitingHandler.pendingStart = false
+          try {
+            waitingHandler.handler.onRequestStart?.(waitingHandler.controller, context)
+          } catch {
+            // Ignore errors from waiting handlers
+            waitingHandler.done = true
+          }
+        }
+      }
+      this.#pruneDoneWaitingHandlers()
+    }
     this.#primaryHandler.onRequestStart?.(controller, context)
   }
 
@@ -25430,37 +26467,40 @@ class DeduplicationHandler {
     }
 
     this.#completed = true
-    this.#primaryHandler.onResponseEnd?.(controller, trailers)
+    // Remove the completed request before callbacks can redispatch into this
+    // interceptor. Cleanup must not depend on downstream handlers succeeding.
+    this.#cleanup()
 
-    for (const waitingHandler of this.#waitingHandlers) {
-      if (waitingHandler.done || waitingHandler.controller.aborted) {
-        waitingHandler.done = true
-        continue
+    try {
+      this.#primaryHandler.onResponseEnd?.(controller, trailers)
+    } catch (err) {
+      // Completion callbacks may throw to initiate a retry. The transport's
+      // error callback would be ignored now that this handler is completed.
+      this.#primaryHandler.onResponseError?.(controller, err)
+    } finally {
+      for (const waitingHandler of this.#waitingHandlers) {
+        if (waitingHandler.done || waitingHandler.controller.aborted) {
+          waitingHandler.done = true
+          continue
+        }
+
+        this.#flushWaitingHandler(waitingHandler)
+
+        if (waitingHandler.done || waitingHandler.controller.aborted) {
+          waitingHandler.done = true
+          continue
+        }
+
+        if (waitingHandler.controller.paused) {
+          waitingHandler.pendingTrailers = trailers
+          continue
+        }
+
+        this.#endWaitingHandler(waitingHandler, trailers)
       }
 
-      this.#flushWaitingHandler(waitingHandler)
-
-      if (waitingHandler.done || waitingHandler.controller.aborted) {
-        waitingHandler.done = true
-        continue
-      }
-
-      if (waitingHandler.controller.paused && waitingHandler.bufferedChunks.length > 0) {
-        waitingHandler.pendingTrailers = trailers
-        continue
-      }
-
-      try {
-        waitingHandler.handler.onResponseEnd?.(waitingHandler.controller, trailers)
-      } catch {
-        // Ignore errors from waiting handlers
-      }
-
-      waitingHandler.done = true
+      this.#pruneDoneWaitingHandlers()
     }
-
-    this.#pruneDoneWaitingHandlers()
-    this.#onComplete?.()
   }
 
   /**
@@ -25474,15 +26514,23 @@ class DeduplicationHandler {
 
     this.#aborted = true
     this.#completed = true
+    this.#cleanup()
 
-    this.#primaryHandler.onResponseError?.(controller, err)
+    try {
+      this.#primaryHandler.onResponseError?.(controller, err)
+    } finally {
+      for (const waitingHandler of this.#waitingHandlers) {
+        this.#errorWaitingHandler(waitingHandler, err)
+      }
 
-    for (const waitingHandler of this.#waitingHandlers) {
-      this.#errorWaitingHandler(waitingHandler, err)
+      this.#waitingHandlers = []
     }
+  }
 
-    this.#waitingHandlers = []
-    this.#onComplete?.()
+  #cleanup () {
+    const onComplete = this.#onComplete
+    this.#onComplete = null
+    onComplete?.()
   }
 
   /**
@@ -25497,7 +26545,8 @@ class DeduplicationHandler {
       bufferedChunks: [],
       bufferedBytes: 0,
       pendingTrailers: null,
-      done: false
+      done: false,
+      pendingStart: false
     }
 
     const state = {
@@ -25522,14 +26571,7 @@ class DeduplicationHandler {
           !state.paused &&
           !state.aborted
         ) {
-          try {
-            waitingHandler.handler.onResponseEnd?.(waitingHandler.controller, waitingHandler.pendingTrailers)
-          } catch {
-            // Ignore errors from waiting handlers
-          }
-
-          waitingHandler.pendingTrailers = null
-          waitingHandler.done = true
+          this.#endWaitingHandler(waitingHandler, waitingHandler.pendingTrailers)
         }
 
         this.#pruneDoneWaitingHandlers()
@@ -25543,12 +26585,22 @@ class DeduplicationHandler {
       get aborted () { return state.aborted },
       get reason () { return state.reason },
       abort: (reason) => {
+        if (state.aborted) {
+          return
+        }
+
         state.aborted = true
         state.reason = reason ?? null
         waitingHandler.done = true
         waitingHandler.pendingTrailers = null
         waitingHandler.bufferedChunks = []
         waitingHandler.bufferedBytes = 0
+
+        try {
+          handler.onResponseError?.(waitingHandler.controller, state.reason ?? new RequestAbortedError())
+        } catch {
+          // Ignore errors from waiting handlers
+        }
       }
     }
 
@@ -25573,7 +26625,7 @@ class DeduplicationHandler {
 
     if (waitingHandler.bufferedBytes > this.#maxBufferSize) {
       const err = new RequestAbortedError(`Deduplicated waiting handler exceeded maxBufferSize (${this.#maxBufferSize} bytes) while paused`)
-      this.#errorWaitingHandler(waitingHandler, err)
+      waitingHandler.controller.abort(err)
     }
   }
 
@@ -25610,6 +26662,27 @@ class DeduplicationHandler {
 
   /**
    * @param {WaitingHandler} waitingHandler
+   * @param {object} trailers
+   */
+  #endWaitingHandler (waitingHandler, trailers) {
+    waitingHandler.done = true
+    waitingHandler.pendingTrailers = null
+
+    try {
+      waitingHandler.handler.onResponseEnd?.(waitingHandler.controller, trailers)
+    } catch (err) {
+      // This is a response failure, not a consumer abort. Aborting the waiting
+      // controller here would prevent downstream handlers from retrying.
+      try {
+        waitingHandler.handler.onResponseError?.(waitingHandler.controller, err)
+      } catch {
+        // An error callback must not prevent other waiting handlers completing.
+      }
+    }
+  }
+
+  /**
+   * @param {WaitingHandler} waitingHandler
    * @param {Error} err
    */
   #errorWaitingHandler (waitingHandler, err) {
@@ -25622,8 +26695,9 @@ class DeduplicationHandler {
     waitingHandler.bufferedChunks = []
     waitingHandler.bufferedBytes = 0
 
+    // A response failure is not a consumer abort: retry handlers must be able
+    // to retry it just as they would a failure of the primary request.
     try {
-      waitingHandler.controller.abort(err)
       waitingHandler.handler.onResponseError?.(waitingHandler.controller, err)
     } catch {
       // Ignore errors from waiting handlers
@@ -25640,15 +26714,16 @@ module.exports = DeduplicationHandler
 
 /***/ }),
 
-/***/ 8102:
+/***/ 2822:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const util = __nccwpck_require__(4108)
+const util = __nccwpck_require__(6364)
 const assert = __nccwpck_require__(4589)
-const { InvalidArgumentError } = __nccwpck_require__(39)
+const { InvalidArgumentError, MaxRedirectsError } = __nccwpck_require__(5767)
+const { kRequestOrigin, kRedirectCacheControl } = __nccwpck_require__(3599)
 
 const redirectableStatusCodes = [300, 301, 302, 303, 307, 308]
 
@@ -25683,10 +26758,27 @@ class RedirectHandler {
     this.maxRedirections = maxRedirections
     this.handler = handler
     this.history = []
+    // `cache-control` of each intermediate (suppressed) redirect hop. An outer
+    // cache uses it to preserve a hop's storage policy (e.g. `no-store`) that
+    // would otherwise be lost because the hop's response is not forwarded. It
+    // travels as a non-enumerable property of the history array so it reaches
+    // the cache without becoming part of the public request/response context.
+    Object.defineProperty(this.history, kRedirectCacheControl, {
+      value: [],
+      enumerable: false
+    })
   }
 
   onRequestStart (controller, context) {
     this.handler.onRequestStart?.(controller, { ...context, history: this.history })
+  }
+
+  onBodySent (chunk) {
+    this.handler.onBodySent?.(chunk)
+  }
+
+  onRequestSent () {
+    this.handler.onRequestSent?.()
   }
 
   onRequestUpgrade (controller, statusCode, headers, socket) {
@@ -25694,8 +26786,9 @@ class RedirectHandler {
   }
 
   onResponseStart (controller, statusCode, headers, statusMessage) {
-    if (this.opts.throwOnMaxRedirect && this.history.length >= this.maxRedirections) {
-      throw new Error('max redirects')
+    if (statusCode < 200) {
+      this.handler.onResponseStart?.(controller, statusCode, headers, statusMessage)
+      return
     }
 
     let removeContentHeaders = statusCode === 303
@@ -25723,12 +26816,26 @@ class RedirectHandler {
       this.opts.body = null
     }
 
-    this.location = this.history.length >= this.maxRedirections || util.isDisturbed(this.opts.body) || redirectableStatusCodes.indexOf(statusCode) === -1
+    this.location = util.isDisturbed(this.opts.body) || redirectableStatusCodes.indexOf(statusCode) === -1
       ? null
-      : headers.location
+      : headers.location || null
 
-    if (this.opts.origin) {
-      this.history.push(new URL(this.opts.path, this.opts.origin))
+    // Only a redirect that would otherwise be followed counts against the
+    // limit. The final response after exactly maxRedirections redirects, or a
+    // 3xx without a Location header, is delivered as usual.
+    if (this.location && this.history.length >= this.maxRedirections) {
+      if (this.opts.throwOnMaxRedirect) {
+        throw new MaxRedirectsError()
+      }
+      this.location = null
+    }
+
+    const requestOrigin = this.opts[kRequestOrigin] === undefined
+      ? this.opts.origin
+      : this.opts[kRequestOrigin]
+
+    if (requestOrigin) {
+      this.history.push(new URL(this.opts.path, requestOrigin))
     }
 
     if (!this.location) {
@@ -25736,7 +26843,15 @@ class RedirectHandler {
       return
     }
 
-    const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)))
+    // This hop's response is suppressed (only its Location is used). Record its
+    // cache-control so an outer cache can honor a restrictive policy that would
+    // otherwise be lost when the final response is stored.
+    this.history[kRedirectCacheControl].push(headers['cache-control'])
+
+    const baseUrl = requestOrigin
+      ? new URL(this.opts.path, requestOrigin)
+      : undefined
+    const { origin, pathname, search } = util.parseURL(new URL(this.location, baseUrl))
     const path = search ? `${pathname}${search}` : pathname
 
     // Check for redirect loops by seeing if we've already visited this URL in our history
@@ -25752,9 +26867,10 @@ class RedirectHandler {
     // Remove headers referring to the original URL.
     // By default it is Host only. A 303 or a 301/302 POST-to-GET redirect also removes all Content-* headers.
     // https://tools.ietf.org/html/rfc7231#section-6.4
-    this.opts.headers = cleanRequestHeaders(this.opts.headers, removeContentHeaders, this.opts.origin !== origin, this.stripHeadersOnRedirect, this.stripHeadersOnCrossOriginRedirect)
+    this.opts.headers = cleanRequestHeaders(this.opts.headers, removeContentHeaders, requestOrigin !== origin, this.stripHeadersOnRedirect, this.stripHeadersOnCrossOriginRedirect)
     this.opts.path = path
     this.opts.origin = origin
+    this.opts[kRequestOrigin] = origin
     this.opts.query = null
   }
 
@@ -25869,20 +26985,21 @@ module.exports = RedirectHandler
 
 /***/ }),
 
-/***/ 1684:
+/***/ 1972:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 const assert = __nccwpck_require__(4589)
 
-const { kRetryHandlerDefaultRetry } = __nccwpck_require__(9087)
-const { RequestRetryError } = __nccwpck_require__(39)
+const { kRetryHandlerDefaultRetry } = __nccwpck_require__(3599)
+const { RequestRetryError, RequestAbortedError } = __nccwpck_require__(5767)
 const {
+  hasSafeIterator,
   isDisturbed,
   parseRangeHeader,
   wrapRequestBody
-} = __nccwpck_require__(4108)
+} = __nccwpck_require__(6364)
 
 function calculateRetryAfterHeader (retryAfter) {
   const retryTime = new Date(retryAfter).getTime()
@@ -25916,19 +27033,59 @@ function validatePartialResponseContentLength (headers, range, statusCode, retry
 // new one: backpressure pauses the new connection's controller, but the
 // consumer's resume() targets the old one, so the resumed body stalls forever.
 // The proxy always forwards to the controller of the currently active connection.
+// An abort is additionally reported to the handler so it can cancel a pending
+// retry backoff instead of letting the request hang until the backoff elapses.
+// The notification is a private callback the handler hands over on construction,
+// so nothing outside the handler can trigger it.
 class RetryController {
-  constructor () {
-    this.target = null
+  #onAbort
+  #paused = false
+  #target = null
+
+  constructor (onAbort) {
+    this.#onAbort = onAbort
   }
 
-  pause () { this.target?.pause() }
-  resume () { this.target?.resume() }
-  abort (reason) { this.target?.abort(reason) }
-  get paused () { return this.target?.paused ?? false }
-  get aborted () { return this.target?.aborted ?? false }
-  get reason () { return this.target?.reason ?? null }
-  get rawHeaders () { return this.target?.rawHeaders ?? null }
-  get rawTrailers () { return this.target?.rawTrailers ?? null }
+  set target (target) {
+    this.#target = target
+    if (this.#paused) {
+      target?.pause()
+    }
+  }
+
+  get target () { return this.#target }
+
+  pause () {
+    this.#paused = true
+    this.#target?.pause()
+  }
+
+  resume () {
+    this.#paused = false
+    this.#target?.resume()
+  }
+
+  abort (reason) {
+    this.#target?.abort(reason)
+    this.#onAbort(reason)
+  }
+
+  get paused () { return this.#paused || (this.#target?.paused ?? false) }
+  get aborted () { return this.#target?.aborted ?? false }
+  get reason () { return this.#target?.reason ?? null }
+  get rawHeaders () { return this.#target?.rawHeaders ?? null }
+  set rawHeaders (value) {
+    if (this.#target) {
+      this.#target.rawHeaders = value
+    }
+  }
+
+  get rawTrailers () { return this.#target?.rawTrailers ?? null }
+  set rawTrailers (value) {
+    if (this.#target) {
+      this.#target.rawTrailers = value
+    }
+  }
 }
 
 class RetryHandler {
@@ -25987,15 +27144,38 @@ class RetryHandler {
     this.etag = null
     this.statusCode = null
     this.headers = null
-    this.controllerProxy = new RetryController()
+    this.controllerProxy = new RetryController(reason => this.#onAbort(reason))
+    // A retry decision is in flight (the policy may be holding a backoff
+    // timer). While pending, a consumer abort cancels the wait.
+    this.retryPending = false
+    // Backoff timer returned by the retry policy, so #onAbort can cancel it.
+    // Null for custom policies that do not return their timer.
+    this.retryTimer = null
+    // A response can complete while its controller is paused if the peer closes
+    // the connection. Hold its body until the retry policy decides whether to
+    // discard it for a retry or forward it as the final response.
+    this.pendingResponseData = null
+    this.pendingResponseTrailers = null
+    this.pendingResponseEnded = false
+    // Set once an abort during the backoff delivered the terminal error
+    // downstream; late policy callbacks and connection errors are then moot.
+    this.aborted = false
   }
 
   onResponseStartWithRetry (controller, statusCode, headers, statusMessage, err) {
     if (this.retryOpts.throwOnError) {
       // Preserve old behavior for status codes that are not eligible for retry
       if (this.retryOpts.statusCodes.includes(statusCode) === false) {
-        this.headersSent = true
-        this.handler.onResponseStart?.(this.controllerProxy, statusCode, headers, statusMessage)
+        if (this.headersSent) {
+          // The downstream handler already received the response from an
+          // earlier attempt. Forwarding this response would replace the
+          // downstream body and leave the original body pending forever.
+          this.handler.onResponseError?.(this.controllerProxy, err)
+        } else {
+          this.headersSent = true
+          this.checkpointResponseEnd(headers)
+          this.handler.onResponseStart?.(this.controllerProxy, statusCode, headers, statusMessage)
+        }
       } else {
         this.error = err
       }
@@ -26005,20 +27185,55 @@ class RetryHandler {
 
     if (isDisturbed(this.opts.body)) {
       this.headersSent = true
+      this.checkpointResponseEnd(headers)
       this.handler.onResponseStart?.(this.controllerProxy, statusCode, headers, statusMessage)
       return
     }
 
     function shouldRetry (passedErr) {
+      if (this.aborted) {
+        // Aborted while the policy was deciding; the decision is moot.
+        return
+      }
+      this.retryPending = false
+      this.retryTimer = null
+
+      const pendingData = this.pendingResponseData
+      const pendingTrailers = this.pendingResponseTrailers
+      const pendingEnd = this.pendingResponseEnded
+      this.pendingResponseData = null
+      this.pendingResponseTrailers = null
+      this.pendingResponseEnded = false
+
       if (passedErr) {
-        this.headersSent = true
-        this.handler.onResponseStart?.(this.controllerProxy, statusCode, headers, statusMessage)
+        if (this.headersSent) {
+          // The downstream handler already received the response from an
+          // earlier attempt. Forwarding this response would replace the
+          // downstream body and leave the original body pending forever.
+          this.handler.onResponseError?.(this.controllerProxy, passedErr)
+        } else {
+          this.headersSent = true
+          this.checkpointResponseEnd(headers)
+          this.handler.onResponseStart?.(this.controllerProxy, statusCode, headers, statusMessage)
+          controller.resume()
+
+          if (pendingEnd) {
+            for (const chunk of pendingData) {
+              this.onResponseData(controller, chunk)
+            }
+            this.onResponseEnd(controller, pendingTrailers)
+          }
+          return
+        }
         controller.resume()
         return
       }
 
       this.error = err
       controller.resume()
+      if (pendingEnd) {
+        this.onResponseEnd(controller, pendingTrailers)
+      }
     }
 
     // The pause()/resume() pair (here and in shouldRetry) acts on THIS
@@ -26029,14 +27244,34 @@ class RetryHandler {
     // between, leaving this one paused forever -- the very stall the proxy exists
     // to prevent.
     controller.pause()
-    this.retryOpts.retry(
+    // The default policy returns its backoff timer so an abort can cancel it;
+    // a custom policy may return anything (or nothing), which is ignored.
+    this.retryPending = true
+    this.pendingResponseData = []
+    this.pendingResponseTrailers = null
+    this.pendingResponseEnded = false
+    this.retryTimer = this.retryOpts.retry(
       err,
       {
         state: { counter: this.retryCount },
         opts: { retryOptions: this.retryOpts, ...this.opts }
       },
       shouldRetry.bind(this)
-    )
+    ) ?? null
+  }
+
+  checkpointResponseEnd (headers) {
+    if (this.end == null && this.opts.method !== 'HEAD') {
+      const contentLength = headers['content-length']
+      this.end = contentLength != null ? Number(contentLength) - 1 : null
+
+      assert(
+        this.end == null || Number.isFinite(this.end),
+        'invalid content-length'
+      )
+
+      this.resume = this.end != null
+    }
   }
 
   onRequestStart (controller, context) {
@@ -26049,6 +27284,14 @@ class RetryHandler {
     if (!this.headersSent) {
       this.handler.onRequestStart?.(this.controllerProxy, context)
     }
+  }
+
+  onBodySent (chunk) {
+    this.handler.onBodySent?.(chunk)
+  }
+
+  onRequestSent () {
+    this.handler.onRequestSent?.()
   }
 
   onRequestUpgrade (_controller, statusCode, headers, socket) {
@@ -26065,7 +27308,8 @@ class RetryHandler {
       timeoutFactor,
       statusCodes,
       errorCodes,
-      methods
+      methods,
+      retryAfter
     } = retryOptions
     const { counter } = state
 
@@ -26097,7 +27341,7 @@ class RetryHandler {
       return
     }
 
-    let retryAfterHeader = headers?.['retry-after']
+    let retryAfterHeader = retryAfter === false ? undefined : headers?.['retry-after']
     if (retryAfterHeader) {
       retryAfterHeader = Number(retryAfterHeader)
       retryAfterHeader = Number.isNaN(retryAfterHeader)
@@ -26112,7 +27356,9 @@ class RetryHandler {
           ? Math.min(retryAfterHeader, maxTimeout)
           : Math.min(minTimeout * timeoutFactor ** (counter - 1), maxTimeout)
 
-    setTimeout(() => cb(null), retryTimeout)
+    // Return the backoff timer so the handler can cancel it when the
+    // consumer aborts while the retry decision is pending.
+    return setTimeout(() => cb(null), retryTimeout)
   }
 
   onResponseStart (controller, statusCode, headers, statusMessage) {
@@ -26125,18 +27371,6 @@ class RetryHandler {
     this.retryCount += 1
     this.statusCode = statusCode
     this.headers = headers
-
-    if (statusCode >= 300) {
-      const err = new RequestRetryError('Request failed', statusCode, {
-        headers,
-        data: {
-          count: this.retryCount
-        }
-      })
-
-      this.onResponseStartWithRetry(controller, statusCode, headers, statusMessage, err)
-      return
-    }
 
     // Checkpoint for resume from where we left it
     if (this.headersSent) {
@@ -26174,9 +27408,25 @@ class RetryHandler {
 
       const { start, size, end = size ? size - 1 : null } = contentRange
 
-      assert(this.start === start, 'content-range mismatch')
-      assert(this.end == null || this.end === end, 'content-range mismatch')
+      if (this.start !== start || (this.end != null && this.end !== end)) {
+        throw new RequestRetryError('Content-Range mismatch', statusCode, {
+          headers,
+          data: { count: this.retryCount }
+        })
+      }
 
+      return
+    }
+
+    if (statusCode >= 300) {
+      const err = new RequestRetryError('Request failed', statusCode, {
+        headers,
+        data: {
+          count: this.retryCount
+        }
+      })
+
+      this.onResponseStartWithRetry(controller, statusCode, headers, statusMessage, err)
       return
     }
 
@@ -26251,6 +27501,11 @@ class RetryHandler {
   }
 
   onResponseData (_controller, chunk) {
+    if (this.pendingResponseData !== null) {
+      this.pendingResponseData.push(chunk)
+      return
+    }
+
     if (this.error) {
       return
     }
@@ -26261,6 +27516,12 @@ class RetryHandler {
   }
 
   onResponseEnd (_controller, trailers) {
+    if (this.pendingResponseData !== null) {
+      this.pendingResponseTrailers = trailers
+      this.pendingResponseEnded = true
+      return
+    }
+
     if (this.error && this.retryOpts.throwOnError) {
       throw this.error
     }
@@ -26285,19 +27546,9 @@ class RetryHandler {
 
   retry () {
     if (this.start !== 0) {
-      const headers = { range: `bytes=${this.start}-${this.end ?? ''}` }
-
-      // Weak etag check - weak etags will make comparison algorithms never match
-      if (this.etag != null) {
-        headers['if-match'] = this.etag
-      }
-
       this.opts = {
         ...this.opts,
-        headers: {
-          ...this.opts.headers,
-          ...headers
-        }
+        headers: buildResumeHeaders(this.opts.headers, `bytes=${this.start}-${this.end ?? ''}`, this.etag)
       }
     }
 
@@ -26310,14 +27561,27 @@ class RetryHandler {
   }
 
   onResponseError (controller, err) {
+    if (this.aborted) {
+      // #onAbort already delivered the terminal error downstream; the late
+      // error of the torn-down connection must not be forwarded twice.
+      return
+    }
+
     // controller is THIS failed connection (not the proxy): we inspect whether
     // the consumer aborted it to decide retry-vs-propagate.
-    if (controller?.aborted || isDisturbed(this.opts.body)) {
+    if (controller?.aborted || isDisturbed(this.opts.body) || (this.headersSent && !this.resume)) {
       this.handler.onResponseError?.(this.controllerProxy, err)
       return
     }
 
     function shouldRetry (returnedErr) {
+      if (this.aborted) {
+        // Aborted while the policy was deciding; the decision is moot.
+        return
+      }
+      this.retryPending = false
+      this.retryTimer = null
+
       if (!returnedErr) {
         this.retry()
         return
@@ -26337,15 +27601,77 @@ class RetryHandler {
       this.retryCount += 1
     }
 
-    this.retryOpts.retry(
+    this.retryPending = true
+    this.retryTimer = this.retryOpts.retry(
       err,
       {
         state: { counter: this.retryCount },
         opts: { retryOptions: this.retryOpts, ...this.opts }
       },
       shouldRetry.bind(this)
-    )
+    ) ?? null
   }
+
+  #onAbort (reason) {
+    // A consumer abort lands on the controller proxy. If the retry policy is
+    // still deciding (typically holding a backoff timer), cancel the wait and
+    // surface the abort immediately instead of letting the request hang until
+    // the backoff elapses.
+    if (!this.retryPending) {
+      return
+    }
+
+    this.aborted = true
+    this.retryPending = false
+    clearTimeout(this.retryTimer)
+    this.retryTimer = null
+    this.pendingResponseData = null
+    this.pendingResponseTrailers = null
+    this.pendingResponseEnded = false
+    this.handler.onResponseError?.(this.controllerProxy, reason ?? new RequestAbortedError())
+  }
+}
+
+function isReplacedHeader (key, etag) {
+  const name = key.toLowerCase()
+  return name === 'range' || (etag != null && name === 'if-match')
+}
+
+function buildResumeHeaders (headers, range, etag) {
+  if (Array.isArray(headers) || (headers && typeof headers === 'object' && hasSafeIterator(headers))) {
+    const ret = []
+    if (Array.isArray(headers)) {
+      for (let i = 0; i < headers.length; i += 2) {
+        if (!isReplacedHeader(headers[i], etag)) {
+          ret.push(headers[i], headers[i + 1])
+        }
+      }
+    } else {
+      for (const [key, value] of headers) {
+        if (!isReplacedHeader(key, etag)) {
+          ret.push(key, value)
+        }
+      }
+    }
+    ret.push('range', range)
+    // Weak etag check - weak etags will make comparison algorithms never match
+    if (etag != null) {
+      ret.push('if-match', etag)
+    }
+    return ret
+  }
+
+  const ret = {}
+  for (const key in headers) {
+    if (Object.hasOwn(headers, key) && !isReplacedHeader(key, etag)) {
+      ret[key] = headers[key]
+    }
+  }
+  ret.range = range
+  if (etag != null) {
+    ret['if-match'] = etag
+  }
+  return ret
 }
 
 module.exports = RetryHandler
@@ -26353,7 +27679,7 @@ module.exports = RetryHandler
 
 /***/ }),
 
-/***/ 3618:
+/***/ 5714:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -26361,13 +27687,22 @@ module.exports = RetryHandler
 
 const assert = __nccwpck_require__(4589)
 const { Readable } = __nccwpck_require__(7075)
-const util = __nccwpck_require__(4108)
-const CacheHandler = __nccwpck_require__(3276)
-const MemoryCacheStore = __nccwpck_require__(1405)
-const CacheRevalidationHandler = __nccwpck_require__(9065)
-const { assertCacheStore, assertCacheMethods, makeCacheKey, normalizeHeaders, parseCacheControlHeader, isInvalidOrWildcardVaryHeader } = __nccwpck_require__(7527)
-const { AbortError } = __nccwpck_require__(39)
-const { parseHttpDate } = __nccwpck_require__(5041)
+const util = __nccwpck_require__(6364)
+const CacheHandler = __nccwpck_require__(9452)
+const MemoryCacheStore = __nccwpck_require__(125)
+const CacheRevalidationHandler = __nccwpck_require__(6409)
+const {
+  assertCacheStore,
+  assertCacheMethods,
+  getInterceptorOrigin,
+  makeCacheKey,
+  normalizeHeaders,
+  parseCacheControlHeader,
+  isInvalidOrWildcardVaryHeader,
+  parseVaryHeader
+} = __nccwpck_require__(3831)
+const { AbortError } = __nccwpck_require__(5767)
+const { parseHttpDate } = __nccwpck_require__(5233)
 
 /**
  * @param {(string | RegExp)[] | undefined} origins
@@ -26476,7 +27811,10 @@ function staleResponseRequiresRevalidation (result, cacheType) {
  * @returns {boolean}
  */
 function revalidationResponseDisallowsCachedReuse (cacheType, headers) {
-  if (headers.vary && isInvalidOrWildcardVaryHeader(headers.vary)) {
+  if (
+    (headers.vary && isInvalidOrWildcardVaryHeader(headers.vary)) ||
+    (cacheType === 'shared' && Object.hasOwn(headers, 'set-cookie'))
+  ) {
     return true
   }
 
@@ -26492,6 +27830,25 @@ function revalidationResponseDisallowsCachedReuse (cacheType, headers) {
 
 function revalidationResponseUpdatesCacheControl (headers) {
   return headers['cache-control'] !== undefined
+}
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {Record<string, string | string[] | null> | undefined} varyDirectives
+ * @returns {boolean}
+ */
+function revalidationResponseAddsVary (result, varyDirectives) {
+  if (!varyDirectives) {
+    return false
+  }
+
+  for (const key in varyDirectives) {
+    if (result.vary == null || !Object.hasOwn(result.vary, key)) {
+      return true
+    }
+  }
+
+  return false
 }
 
 function deleteCachedValue (store, cacheKey) {
@@ -26538,7 +27895,10 @@ function makeRevalidationHeaders (opts, result) {
  */
 function isStale (result, cacheControlDirectives, cacheType) {
   const now = Date.now()
-  if (now > result.staleAt) {
+  // A zero freshness lifetime (e.g. max-age=0 with a validator) is never fresh,
+  // even when reused within the same millisecond or after a clock step back.
+  // https://www.rfc-editor.org/rfc/rfc9111.html#section-4.2
+  if (now > result.staleAt || result.staleAt <= result.cachedAt) {
     // Response is stale
     if (!staleResponseRequiresRevalidation(result, cacheType) && cacheControlDirectives?.['max-stale']) {
       // There's a threshold where we can serve stale responses, let's see if
@@ -26658,6 +28018,9 @@ function sendCachedValue (handler, opts, result, age, context, isStale) {
   assert(!stream.destroyed, 'stream should not be destroyed')
   assert(!stream.readableDidRead, 'stream should not be readableDidRead')
 
+  let aborted = false
+  let abortReason = null
+
   const controller = {
     rawHeaders: [],
     rawTrailers: [],
@@ -26671,13 +28034,18 @@ function sendCachedValue (handler, opts, result, age, context, isStale) {
       return stream.isPaused()
     },
     get aborted () {
-      return stream.destroyed
+      return aborted
     },
     get reason () {
-      return stream.errored
+      return abortReason
     },
     abort (reason) {
-      stream.destroy(reason ?? new AbortError())
+      if (aborted) {
+        return
+      }
+      aborted = true
+      abortReason = reason ?? new AbortError()
+      stream.destroy(abortReason)
     }
   }
 
@@ -26745,6 +28113,17 @@ function handleResult (
   result
 ) {
   if (!result) {
+    return handleUncachedResponse(dispatch, globalOpts, cacheKey, handler, opts, reqCacheControl)
+  }
+
+  // Shared stores may outlive the Undici version that wrote them. Do not
+  // re-serve a Set-Cookie header from an existing shared-cache entry.
+  if (globalOpts.type === 'shared' && Object.hasOwn(result.headers, 'set-cookie')) {
+    if (util.isStream(result.body)) {
+      result.body.on('error', nop).destroy()
+    }
+
+    deleteCachedValue(globalOpts.store, cacheKey)
     return handleUncachedResponse(dispatch, globalOpts, cacheKey, handler, opts, reqCacheControl)
   }
 
@@ -26830,6 +28209,13 @@ function handleResult (
 
               if (revalidationResponseUpdatesCacheControl(headers)) {
                 deleteCachedValue(globalOpts.store, cacheKey)
+              } else if (revalidationResponseAddsVary(result, headers.vary ? parseVaryHeader(headers.vary, opts.headers) : undefined)) {
+                if (util.isStream(result.body)) {
+                  result.body.on('error', nop).destroy()
+                }
+
+                deleteCachedValue(globalOpts.store, cacheKey)
+                return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
               }
             }
 
@@ -26897,29 +28283,28 @@ module.exports = (opts = {}) => {
     }
   }
 
-  return dispatch => {
+  return (dispatch, interceptorOrigin) => {
     return (opts, handler) => {
-      if (arrayIncludes(safeMethodsToNotCache, opts.method)) {
-        // Not a method we want to cache, skip
+      const requestOrigin = getInterceptorOrigin(opts, interceptorOrigin)
+      if (!requestOrigin || arrayIncludes(safeMethodsToNotCache, opts.method)) {
+        // We cannot safely cache without an authoritative origin, or this is
+        // not a method we want to cache.
         return dispatch(opts, handler)
       }
 
       // Check if origin is in whitelist
       if (origins !== undefined) {
-        if (!opts.origin) {
-          return dispatch(opts, handler)
-        }
-        const requestOrigin = opts.origin.toString().toLowerCase()
+        const normalizedRequestOrigin = requestOrigin.toString().toLowerCase()
         let isAllowed = false
 
         for (let i = 0; i < origins.length; i++) {
           const allowed = origins[i]
           if (typeof allowed === 'string') {
-            if (allowed.toLowerCase() === requestOrigin) {
+            if (allowed.toLowerCase() === normalizedRequestOrigin) {
               isAllowed = true
               break
             }
-          } else if (allowed.test(requestOrigin)) {
+          } else if (allowed.test(normalizedRequestOrigin)) {
             isAllowed = true
             break
           }
@@ -26948,7 +28333,12 @@ module.exports = (opts = {}) => {
       /**
        * @type {import('../../types/cache-interceptor.d.ts').default.CacheKey}
        */
-      const cacheKey = makeCacheKey(opts)
+      const cacheKey = makeCacheKey(opts, requestOrigin)
+
+      if (!arrayIncludes(util.safeHTTPMethods, opts.method)) {
+        return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
+      }
+
       const result = store.get(cacheKey)
 
       if (result && typeof result.then === 'function') {
@@ -26979,32 +28369,116 @@ module.exports = (opts = {}) => {
 
 /***/ }),
 
-/***/ 2721:
+/***/ 9793:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { createInflate, createGunzip, createBrotliDecompress, createZstdDecompress } = __nccwpck_require__(8522)
-const { pipeline } = __nccwpck_require__(7075)
-const DecoratorHandler = __nccwpck_require__(4335)
+const { createInflate, createGunzip, createBrotliDecompress, createZstdDecompress, constants } = __nccwpck_require__(8522)
+const { pipeline, Transform: TransformStream } = __nccwpck_require__(7075)
+const { InvalidArgumentError, ResponseExceededMaxSizeError } = __nccwpck_require__(5767)
+const DecoratorHandler = __nccwpck_require__(9663)
 
 /** @typedef {import('node:stream').Transform} Transform */
 /** @typedef {import('node:stream').Transform} Controller */
 /** @typedef {Transform&import('node:zlib').Zlib} DecompressorStream */
 
+class DecompressController {
+  #onPause
+  #onResume
+  #onAbort
+  #paused = false
+
+  constructor (onPause, onResume, onAbort) {
+    this.#onPause = onPause
+    this.#onResume = onResume
+    this.#onAbort = onAbort
+    this.target = null
+  }
+
+  pause () {
+    if (this.#paused) {
+      return
+    }
+
+    this.#paused = true
+    this.#onPause()
+  }
+
+  resume () {
+    if (!this.#paused) {
+      return
+    }
+
+    this.#paused = false
+    this.#onResume()
+  }
+
+  abort (reason) {
+    this.target?.abort(reason)
+    this.#onAbort(reason)
+  }
+
+  get paused () { return this.#paused }
+  get aborted () { return this.target?.aborted ?? false }
+  get reason () { return this.target?.reason ?? null }
+  get rawHeaders () { return this.target?.rawHeaders ?? null }
+  set rawHeaders (value) {
+    if (this.target) {
+      this.target.rawHeaders = value
+    }
+  }
+
+  get rawTrailers () { return this.target?.rawTrailers ?? null }
+  set rawTrailers (value) {
+    if (this.target) {
+      this.target.rawTrailers = value
+    }
+  }
+}
+
+// `compress` and `x-compress` are deliberately absent. RFC 9110 section
+// 8.4.1.1 defines them as the UNIX compress (LZW) format, which zlib cannot
+// read, so inflating them turns a readable response into a Z_DATA_ERROR.
+// fetch() leaves them alone, and so does this interceptor.
 /** @type {Record<string, () => DecompressorStream>} */
 const supportedEncodings = {
+  __proto__: null,
   gzip: createGunzip,
   'x-gzip': createGunzip,
   br: createBrotliDecompress,
   deflate: createInflate,
-  compress: createInflate,
-  'x-compress': createInflate,
-  zstd: createZstdDecompress
+  // https://www.rfc-editor.org/rfc/rfc9659.html#section-3
+  zstd: createZstdDecompress.bind(null, { params: { [constants.ZSTD_d_windowLogMax]: 23 } })
 }
 
 const defaultSkipStatusCodes = /** @type {const} */ ([204, 304])
+const defaultMaxSize = 0
+
+/**
+ * Limits the output of one stage in a decompression chain.
+ * @param {number} maxSize - Maximum output size in bytes
+ * @returns {Transform}
+ */
+function createMaxSizeLimiter (maxSize) {
+  let size = 0
+
+  return new TransformStream({
+    transform (chunk, _encoding, callback) {
+      const decompressedSize = size + chunk.length
+      if (decompressedSize > maxSize) {
+        callback(new ResponseExceededMaxSizeError(
+          `Decompressed response size (${decompressedSize}) exceeded maxSize (${maxSize})`
+        ))
+        return
+      }
+
+      size = decompressedSize
+      callback(null, chunk)
+    }
+  })
+}
 
 let warningEmitted = /** @type {boolean} */ (false)
 
@@ -27012,6 +28486,7 @@ let warningEmitted = /** @type {boolean} */ (false)
  * @typedef {Object} DecompressHandlerOptions
  * @property {number[]|Readonly<number[]>} [skipStatusCodes=[204, 304]] - List of status codes to skip decompression for
  * @property {boolean} [skipErrorResponses] - Whether to skip decompression for error responses (status codes >= 400)
+ * @property {number} [maxSize=0] - Maximum decompressed response size in bytes. 0 disables the limit
  */
 
 class DecompressHandler extends DecoratorHandler {
@@ -27023,11 +28498,148 @@ class DecompressHandler extends DecoratorHandler {
   #skipStatusCodes
   /** @type {boolean} */
   #skipErrorResponses
+  /** @type {number} */
+  #maxSize
+  /** @type {number} */
+  #decompressedSize = 0
+  /** @type {boolean} */
+  #terminated = false
+  /** @type {boolean} */
+  #inputEnded = false
+  /** @type {boolean} */
+  #inputBackpressured = false
+  /** @type {boolean} */
+  #upstreamPaused = false
+  /** @type {boolean} */
+  #draining = false
+  /** @type {boolean} */
+  #drainRequested = false
+  /** @type {boolean} */
+  #completionPending = false
+  /** @type {DecompressorStream | undefined} */
+  #finalDecompressor
+  /** @type {DecompressController} */
+  #controller
 
-  constructor (handler, { skipStatusCodes = defaultSkipStatusCodes, skipErrorResponses = true } = {}) {
+  constructor (handler, { skipStatusCodes = defaultSkipStatusCodes, skipErrorResponses = true, maxSize = defaultMaxSize } = {}) {
+    if (!Number.isSafeInteger(maxSize) || maxSize < 0) {
+      throw new InvalidArgumentError('maxSize must be a non-negative integer')
+    }
+
     super(handler)
     this.#skipStatusCodes = skipStatusCodes
     this.#skipErrorResponses = skipErrorResponses
+    this.#maxSize = maxSize
+    this.#controller = new DecompressController(
+      () => this.#onDownstreamPause(),
+      () => this.#onDownstreamResume(),
+      reason => {
+        if (this.#inputEnded && !this.#terminated) {
+          this.onResponseError(this.#controller, reason)
+        }
+      }
+    )
+  }
+
+  #onDownstreamPause () {
+    this.#pauseUpstream()
+  }
+
+  #onDownstreamResume () {
+    const drainWasDeferred = this.#draining
+    this.#drainOutput()
+    if (!drainWasDeferred) {
+      this.#resumeUpstreamIfNeeded()
+      this.#finishIfReady()
+    }
+  }
+
+  #pauseUpstream () {
+    if (!this.#upstreamPaused && !this.#terminated) {
+      this.#upstreamPaused = true
+      this.#controller.target?.pause()
+    }
+  }
+
+  #resumeUpstreamIfNeeded () {
+    if (this.#upstreamPaused && !this.#controller.paused && !this.#inputBackpressured) {
+      this.#upstreamPaused = false
+      if (!this.#inputEnded) {
+        this.#controller.target?.resume()
+      }
+    }
+  }
+
+  #drainOutput () {
+    if (this.#terminated || this.#controller.paused || !this.#finalDecompressor) {
+      return
+    }
+
+    if (this.#draining) {
+      this.#drainRequested = true
+      return
+    }
+
+    this.#draining = true
+    try {
+      do {
+        this.#drainRequested = false
+        let chunk
+        while (!this.#terminated && !this.#controller.paused && (chunk = this.#finalDecompressor.read()) !== null) {
+          if (this.#maxSize > 0) {
+            const decompressedSize = this.#decompressedSize + chunk.length
+            if (decompressedSize > this.#maxSize) {
+              this.#fail(new ResponseExceededMaxSizeError(
+                `Decompressed response size (${decompressedSize}) exceeded maxSize (${this.#maxSize})`
+              ))
+              return
+            }
+
+            this.#decompressedSize = decompressedSize
+          }
+
+          try {
+            const result = super.onResponseData(this.#controller, chunk)
+            if (result === false && !this.#controller.paused) {
+              this.#controller.pause()
+            }
+          } catch (err) {
+            this.#fail(err)
+            return
+          }
+        }
+      } while (this.#drainRequested && !this.#terminated && !this.#controller.paused)
+    } finally {
+      this.#draining = false
+    }
+
+    this.#resumeUpstreamIfNeeded()
+    this.#finishIfReady()
+  }
+
+  #finishIfReady () {
+    if (this.#terminated || !this.#completionPending || this.#controller.paused || this.#draining) {
+      return
+    }
+
+    this.#cleanupDecompressors()
+    try {
+      super.onResponseEnd(this.#controller, this.#trailers)
+    } catch (err) {
+      this.#fail(err)
+      return
+    }
+    this.#terminated = true
+  }
+
+  #onDecompressionEnd () {
+    if (this.#terminated) {
+      return
+    }
+
+    this.#completionPending = true
+    this.#drainOutput()
+    this.#finishIfReady()
   }
 
   /**
@@ -27047,7 +28659,7 @@ class DecompressHandler extends DecoratorHandler {
    * Creates a chain of decompressors for multiple content encodings
    *
    * @param {string} encodings - Comma-separated list of content encodings
-   * @returns {Array<DecompressorStream>} - Array of decompressor streams
+   * @returns {Array<Transform>} - Array of decompressor and limiting streams
    * @throws {Error} - If the number of content-encodings exceeds the maximum allowed
    */
   #createDecompressionChain (encodings) {
@@ -27075,60 +28687,97 @@ class DecompressHandler extends DecoratorHandler {
       decompressors.push(supportedEncodings[encoding]())
     }
 
-    return decompressors
+    if (decompressors.length < 2) {
+      return decompressors
+    }
+
+    /** @type {Transform[]} */
+    const streams = []
+    for (let i = 0; i < decompressors.length; i++) {
+      streams.push(decompressors[i])
+      if (i < decompressors.length - 1 && this.#maxSize > 0) {
+        streams.push(createMaxSizeLimiter(this.#maxSize))
+      }
+    }
+
+    return streams
   }
 
   /**
-   * Sets up event handlers for a decompressor stream using readable events
-   * @param {DecompressorStream} decompressor - The decompressor stream
-   * @param {Controller} controller - The controller to coordinate with
+   * Stops decompression and reports an error.
+   * @param {Error} error - The decompression error
    * @returns {void}
    */
-  #setupDecompressorEvents (decompressor, controller) {
-    decompressor.on('readable', () => {
-      let chunk
-      while ((chunk = decompressor.read()) !== null) {
-        const result = super.onResponseData(controller, chunk)
-        if (result === false) {
-          break
-        }
-      }
-    })
+  #fail (error) {
+    if (this.#terminated) {
+      return
+    }
 
-    decompressor.on('error', (error) => {
-      super.onResponseError(controller, error)
-    })
+    if (this.#inputEnded) {
+      // The request is already marked complete once the compressed input ends,
+      // so controller.abort() can no longer propagate decoder flush errors.
+      this.onResponseError(this.#controller, error)
+    } else {
+      this.#controller.abort(error)
+    }
+  }
+
+  /**
+   * Sets up event handlers for the final decompressor stream.
+   * @param {DecompressorStream} decompressor - The decompressor stream
+   * @returns {void}
+   */
+  #setupDecompressorEvents (decompressor) {
+    this.#finalDecompressor = decompressor
+    decompressor.on('readable', () => this.#drainOutput())
+    decompressor.on('error', (error) => this.#fail(error))
   }
 
   /**
    * Sets up event handling for a single decompressor
-   * @param {Controller} controller - The controller to handle events
    * @returns {void}
    */
-  #setupSingleDecompressor (controller) {
+  #setupSingleDecompressor () {
     const decompressor = this.#decompressors[0]
-    this.#setupDecompressorEvents(decompressor, controller)
+    this.#setupDecompressorEvents(decompressor)
 
-    decompressor.on('end', () => {
-      super.onResponseEnd(controller, this.#trailers)
-    })
+    decompressor.on('end', () => this.#onDecompressionEnd())
   }
 
   /**
    * Sets up event handling for multiple chained decompressors using pipeline
-   * @param {Controller} controller - The controller to handle events
    * @returns {void}
    */
-  #setupMultipleDecompressors (controller) {
+  #setupMultipleDecompressors () {
     const lastDecompressor = this.#decompressors[this.#decompressors.length - 1]
-    this.#setupDecompressorEvents(lastDecompressor, controller)
+    this.#setupDecompressorEvents(lastDecompressor)
 
     pipeline(this.#decompressors, (err) => {
-      if (err) {
-        super.onResponseError(controller, err)
+      if (this.#terminated) {
         return
       }
-      super.onResponseEnd(controller, this.#trailers)
+
+      if (err) {
+        this.#fail(err)
+        return
+      }
+
+      this.#onDecompressionEnd()
+    })
+  }
+
+  #setupInputBackpressure () {
+    const decompressor = this.#decompressors[0]
+    decompressor.on('drain', () => {
+      if (this.#terminated) {
+        return
+      }
+
+      this.#inputBackpressured = false
+      if (!this.#controller.paused) {
+        this.#drainOutput()
+        this.#resumeUpstreamIfNeeded()
+      }
     })
   }
 
@@ -27138,6 +28787,16 @@ class DecompressHandler extends DecoratorHandler {
    */
   #cleanupDecompressors () {
     this.#decompressors.length = 0
+    this.#finalDecompressor = undefined
+  }
+
+  onRequestStart (controller, context) {
+    this.#controller.target = controller
+    return super.onRequestStart(this.#controller, context)
+  }
+
+  onRequestUpgrade (controller, statusCode, headers, socket) {
+    return super.onRequestUpgrade(this.#controller, statusCode, headers, socket)
   }
 
   /**
@@ -27148,18 +28807,24 @@ class DecompressHandler extends DecoratorHandler {
    * @returns {void}
    */
   onResponseStart (controller, statusCode, headers, statusMessage) {
-    const contentEncoding = headers['content-encoding']
+    // Repeated field lines reach us as an array. RFC 9110 section 5.3 lets a
+    // recipient join them with commas, which yields the single-line form the
+    // decompression chain already handles.
+    const rawContentEncoding = headers['content-encoding']
+    const contentEncoding = Array.isArray(rawContentEncoding)
+      ? rawContentEncoding.join(',')
+      : rawContentEncoding
 
     // If content encoding is not supported or status code is in skip list
     if (this.#shouldSkipDecompression(contentEncoding, statusCode)) {
-      return super.onResponseStart(controller, statusCode, headers, statusMessage)
+      return super.onResponseStart(this.#controller, statusCode, headers, statusMessage)
     }
 
     const decompressors = this.#createDecompressionChain(contentEncoding.toLowerCase())
 
     if (decompressors.length === 0) {
       this.#cleanupDecompressors()
-      return super.onResponseStart(controller, statusCode, headers, statusMessage)
+      return super.onResponseStart(this.#controller, statusCode, headers, statusMessage)
     }
 
     this.#decompressors = decompressors
@@ -27167,8 +28832,8 @@ class DecompressHandler extends DecoratorHandler {
     // Remove compression headers since we're decompressing
     const { 'content-encoding': _, 'content-length': __, ...newHeaders } = headers
 
-    if (controller?.rawHeaders) {
-      const rawHeaders = controller.rawHeaders
+    if (this.#controller.rawHeaders) {
+      const rawHeaders = this.#controller.rawHeaders
 
       if (Array.isArray(rawHeaders)) {
         const filteredHeaders = []
@@ -27183,7 +28848,7 @@ class DecompressHandler extends DecoratorHandler {
 
           filteredHeaders.push(rawHeaders[i], rawHeaders[i + 1])
         }
-        controller.rawHeaders = filteredHeaders
+        rawHeaders.splice(0, rawHeaders.length, ...filteredHeaders)
       } else if (typeof rawHeaders === 'object') {
         for (const name of Object.keys(rawHeaders)) {
           const lowerName = name.toLowerCase()
@@ -27194,13 +28859,14 @@ class DecompressHandler extends DecoratorHandler {
       }
     }
 
+    this.#setupInputBackpressure()
     if (this.#decompressors.length === 1) {
-      this.#setupSingleDecompressor(controller)
+      this.#setupSingleDecompressor()
     } else {
-      this.#setupMultipleDecompressors(controller)
+      this.#setupMultipleDecompressors()
     }
 
-    return super.onResponseStart(controller, statusCode, newHeaders, statusMessage)
+    return super.onResponseStart(this.#controller, statusCode, newHeaders, statusMessage)
   }
 
   /**
@@ -27210,10 +28876,13 @@ class DecompressHandler extends DecoratorHandler {
    */
   onResponseData (controller, chunk) {
     if (this.#decompressors.length > 0) {
-      this.#decompressors[0].write(chunk)
+      if (!this.#decompressors[0].write(chunk)) {
+        this.#inputBackpressured = true
+        this.#pauseUpstream()
+      }
       return
     }
-    super.onResponseData(controller, chunk)
+    return super.onResponseData(this.#controller, chunk)
   }
 
   /**
@@ -27223,12 +28892,12 @@ class DecompressHandler extends DecoratorHandler {
    */
   onResponseEnd (controller, trailers) {
     if (this.#decompressors.length > 0) {
+      this.#inputEnded = true
       this.#trailers = trailers
       this.#decompressors[0].end()
-      this.#cleanupDecompressors()
       return
     }
-    super.onResponseEnd(controller, trailers)
+    return super.onResponseEnd(this.#controller, trailers)
   }
 
   /**
@@ -27237,13 +28906,16 @@ class DecompressHandler extends DecoratorHandler {
    * @returns {void}
    */
   onResponseError (controller, err) {
-    if (this.#decompressors.length > 0) {
-      for (const decompressor of this.#decompressors) {
-        decompressor.destroy(err)
-      }
-      this.#cleanupDecompressors()
+    if (this.#terminated) {
+      return
     }
-    super.onResponseError(controller, err)
+
+    this.#terminated = true
+    for (const decompressor of this.#decompressors) {
+      decompressor.destroy()
+    }
+    this.#cleanupDecompressors()
+    super.onResponseError(this.#controller, err)
   }
 }
 
@@ -27279,16 +28951,16 @@ module.exports = createDecompressInterceptor
 
 /***/ }),
 
-/***/ 7092:
+/***/ 1156:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const diagnosticsChannel = __nccwpck_require__(3053)
-const util = __nccwpck_require__(4108)
-const DeduplicationHandler = __nccwpck_require__(3131)
-const { normalizeHeaders, makeCacheKey, makeDeduplicationKey } = __nccwpck_require__(7527)
+const util = __nccwpck_require__(6364)
+const DeduplicationHandler = __nccwpck_require__(5643)
+const { getInterceptorOrigin, normalizeHeaders, makeCacheKey, makeDeduplicationKey } = __nccwpck_require__(3831)
 
 const pendingRequestsChannel = diagnosticsChannel.channel('undici:request:pending-requests')
 
@@ -27342,9 +29014,10 @@ module.exports = (opts = {}) => {
    */
   const pendingRequests = new Map()
 
-  return dispatch => {
+  return (dispatch, interceptorOrigin) => {
     return (opts, handler) => {
-      if (opts.upgrade || methods.includes(opts.method) === false) {
+      const requestOrigin = getInterceptorOrigin(opts, interceptorOrigin)
+      if (!requestOrigin || opts.upgrade || methods.includes(opts.method) === false) {
         return dispatch(opts, handler)
       }
 
@@ -27362,7 +29035,7 @@ module.exports = (opts = {}) => {
         }
       }
 
-      const cacheKey = makeCacheKey(opts)
+      const cacheKey = makeCacheKey(opts, requestOrigin)
       const dedupeKey = makeDeduplicationKey(cacheKey, excludeHeaderNamesSet)
 
       // Check if there's already a pending request for this key
@@ -27404,15 +29077,16 @@ module.exports = (opts = {}) => {
 
 /***/ }),
 
-/***/ 5023:
+/***/ 4319:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 const { isIP } = __nccwpck_require__(7030)
 const { lookup } = __nccwpck_require__(610)
-const DecoratorHandler = __nccwpck_require__(4335)
-const { InvalidArgumentError, InformationalError } = __nccwpck_require__(39)
+const DecoratorHandler = __nccwpck_require__(9663)
+const { InvalidArgumentError, InformationalError } = __nccwpck_require__(5767)
+const { kRequestOrigin } = __nccwpck_require__(3599)
 const maxInt = Math.pow(2, 31) - 1
 
 function hasSafeIterator (headers) {
@@ -27599,6 +29273,16 @@ class DNSInstance {
           newOpts.affinity
         )
 
+        // The lookup succeeded, but nothing it returned is usable here: with
+        // dualStack disabled and an affinity set, records of the other family
+        // cannot be picked. Running the lookup again would return the same
+        // records, so report it the way an empty result is reported.
+        if (ip == null) {
+          this.storage.delete(origin.hostname)
+          cb(new InformationalError('No DNS entries found'))
+          return
+        }
+
         let port
         if (typeof ip.port === 'number') {
           port = `:${ip.port}`
@@ -27755,6 +29439,7 @@ class DNSInstance {
       // We delete expired records
       // It is possible that they have different TTL, so we manage them individually
       family.ips.splice(position, 1)
+      return this.pickFamily(origin, ipFamily)
     }
 
     return ip
@@ -27844,6 +29529,9 @@ class DNSDispatchHandler extends DecoratorHandler {
             origin: `${this.#origin.protocol}//${
               ip.family === 6 ? `[${ip.address}]` : ip.address
             }${port}`,
+            [kRequestOrigin]: this.#opts[kRequestOrigin] === undefined
+              ? this.#origin
+              : this.#opts[kRequestOrigin],
             headers: withHostHeader(this.#origin.host, this.#opts.headers)
           }
           this.#dispatch(dispatchOpts, this)
@@ -27967,6 +29655,9 @@ module.exports = interceptorOpts => {
           ...origDispatchOpts,
           servername: origin.hostname, // For SNI on TLS
           origin: newOrigin.origin,
+          [kRequestOrigin]: origDispatchOpts[kRequestOrigin] === undefined
+            ? origin
+            : origDispatchOpts[kRequestOrigin],
           headers: withHostHeader(origin.host, origDispatchOpts.headers)
         }
 
@@ -27987,20 +29678,19 @@ module.exports = interceptorOpts => {
 
 /***/ }),
 
-/***/ 3360:
+/***/ 8016:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { InvalidArgumentError, RequestAbortedError } = __nccwpck_require__(39)
-const DecoratorHandler = __nccwpck_require__(4335)
+const { InvalidArgumentError, RequestAbortedError } = __nccwpck_require__(5767)
+const DecoratorHandler = __nccwpck_require__(9663)
 
 class DumpHandler extends DecoratorHandler {
   #maxSize = 1024 * 1024
   #dumped = false
   #size = 0
-  #controller = null
   aborted = false
   reason = false
 
@@ -28022,7 +29712,6 @@ class DumpHandler extends DecoratorHandler {
 
   onRequestStart (controller, context) {
     controller.abort = this.#abort.bind(this)
-    this.#controller = controller
 
     return super.onRequestStart(controller, context)
   }
@@ -28046,43 +29735,32 @@ class DumpHandler extends DecoratorHandler {
   }
 
   onResponseError (controller, err) {
-    if (this.#dumped) {
-      return
-    }
-
-    // On network errors before connect, controller will be null
-    err = this.#controller?.reason ?? err
-
-    super.onResponseError(controller, err)
+    super.onResponseError(controller, this.aborted === true ? this.reason : err)
   }
 
   onResponseData (controller, chunk) {
     this.#size = this.#size + chunk.length
 
-    if (this.#size >= this.#maxSize) {
-      this.#dumped = true
+    if (this.#size > this.#maxSize) {
+      throw new RequestAbortedError(
+        `Response size (${this.#size}) larger than maxSize (${this.#maxSize})`
+      )
+    }
 
-      if (this.aborted === true) {
-        super.onResponseError(controller, this.reason)
-      } else {
-        super.onResponseEnd(controller, {})
-      }
+    if (this.#size === this.#maxSize) {
+      this.#dumped = true
     }
 
     return true
   }
 
   onResponseEnd (controller, trailers) {
-    if (this.#dumped) {
-      return
-    }
-
-    if (this.#controller.aborted === true) {
+    if (this.aborted === true) {
       super.onResponseError(controller, this.reason)
       return
     }
 
-    super.onResponseEnd(controller, trailers)
+    super.onResponseEnd(controller, this.#dumped ? {} : trailers)
   }
 }
 
@@ -28107,13 +29785,13 @@ module.exports = createDumpInterceptor
 
 /***/ }),
 
-/***/ 2118:
+/***/ 7366:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const RedirectHandler = __nccwpck_require__(8102)
+const RedirectHandler = __nccwpck_require__(2822)
 
 function createRedirectInterceptor ({ maxRedirections: defaultMaxRedirections, throwOnMaxRedirect: defaultThrowOnMaxRedirect, stripHeadersOnRedirect: defaultStripHeadersOnRedirect, stripHeadersOnCrossOriginRedirect: defaultStripHeadersOnCrossOriginRedirect } = {}) {
   return (dispatch) => {
@@ -28136,15 +29814,17 @@ module.exports = createRedirectInterceptor
 
 /***/ }),
 
-/***/ 3226:
+/***/ 4730:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 // const { parseHeaders } = require('../core/util')
-const DecoratorHandler = __nccwpck_require__(4335)
-const { ResponseError } = __nccwpck_require__(39)
+const DecoratorHandler = __nccwpck_require__(9663)
+const { InvalidArgumentError, ResponseError } = __nccwpck_require__(5767)
+
+const defaultMaxSize = 1024 * 1024
 
 class ResponseErrorHandler extends DecoratorHandler {
   #statusCode
@@ -28152,9 +29832,13 @@ class ResponseErrorHandler extends DecoratorHandler {
   #decoder
   #headers
   #body
+  #bodySize
+  #bodyTruncated
+  #maxSize
 
-  constructor (_opts, { handler }) {
+  constructor ({ maxSize }, { handler }) {
     super(handler)
+    this.#maxSize = maxSize
   }
 
   #checkContentType (contentType) {
@@ -28167,6 +29851,8 @@ class ResponseErrorHandler extends DecoratorHandler {
     this.#decoder = null
     this.#headers = null
     this.#body = ''
+    this.#bodySize = 0
+    this.#bodyTruncated = false
 
     return super.onRequestStart(controller, context)
   }
@@ -28185,39 +29871,69 @@ class ResponseErrorHandler extends DecoratorHandler {
     }
   }
 
+  #createResponseError () {
+    this.#body += this.#decoder?.decode(undefined, { stream: false }) ?? ''
+    this.#decoder = null
+
+    if (!this.#bodyTruncated && this.#checkContentType('application/json')) {
+      try {
+        this.#body = JSON.parse(this.#body)
+      } catch {
+        // Do nothing...
+      }
+    }
+
+    let err
+    const stackTraceLimit = Error.stackTraceLimit
+    Error.stackTraceLimit = 0
+    try {
+      err = new ResponseError('Response Error', this.#statusCode, {
+        body: this.#body,
+        bodyTruncated: this.#bodyTruncated,
+        headers: this.#headers
+      })
+    } finally {
+      Error.stackTraceLimit = stackTraceLimit
+    }
+
+    return err
+  }
+
   onResponseData (controller, chunk) {
     if (this.#statusCode < 400) {
       return super.onResponseData(controller, chunk)
     }
 
-    this.#body += this.#decoder?.decode(chunk, { stream: true }) ?? ''
+    if (this.#decoder == null) {
+      return
+    }
+
+    if (this.#maxSize === 0) {
+      this.#body += this.#decoder.decode(chunk, { stream: true })
+      return
+    }
+
+    const remaining = this.#maxSize - this.#bodySize
+
+    if (chunk.length <= remaining) {
+      this.#bodySize += chunk.length
+      this.#body += this.#decoder.decode(chunk, { stream: true })
+      return
+    }
+
+    if (remaining > 0) {
+      this.#body += this.#decoder.decode(chunk.subarray(0, remaining), { stream: true })
+      this.#bodySize = this.#maxSize
+    }
+
+    this.#bodyTruncated = true
+    this.#body += this.#decoder.decode(undefined, { stream: false })
+    this.#decoder = null
   }
 
   onResponseEnd (controller, trailers) {
     if (this.#statusCode >= 400) {
-      this.#body += this.#decoder?.decode(undefined, { stream: false }) ?? ''
-
-      if (this.#checkContentType('application/json')) {
-        try {
-          this.#body = JSON.parse(this.#body)
-        } catch {
-          // Do nothing...
-        }
-      }
-
-      let err
-      const stackTraceLimit = Error.stackTraceLimit
-      Error.stackTraceLimit = 0
-      try {
-        err = new ResponseError('Response Error', this.#statusCode, {
-          body: this.#body,
-          headers: this.#headers
-        })
-      } finally {
-        Error.stackTraceLimit = stackTraceLimit
-      }
-
-      super.onResponseError(controller, err)
+      super.onResponseError(controller, this.#createResponseError())
     } else {
       super.onResponseEnd(controller, trailers)
     }
@@ -28228,10 +29944,16 @@ class ResponseErrorHandler extends DecoratorHandler {
   }
 }
 
-module.exports = () => {
+module.exports = (opts = {}) => {
+  const { maxSize = defaultMaxSize } = opts
+
+  if (!Number.isSafeInteger(maxSize) || maxSize < 0) {
+    throw new InvalidArgumentError('maxSize must be a non-negative integer')
+  }
+
   return (dispatch) => {
     return function Intercept (opts, handler) {
-      return dispatch(opts, new ResponseErrorHandler(opts, { handler }))
+      return dispatch(opts, new ResponseErrorHandler({ maxSize }, { handler }))
     }
   }
 }
@@ -28239,12 +29961,12 @@ module.exports = () => {
 
 /***/ }),
 
-/***/ 5630:
+/***/ 8350:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
-const RetryHandler = __nccwpck_require__(1684)
+const RetryHandler = __nccwpck_require__(1972)
 
 module.exports = globalOpts => {
   return dispatch => {
@@ -28266,14 +29988,14 @@ module.exports = globalOpts => {
 
 /***/ }),
 
-/***/ 3292:
+/***/ 7932:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SPECIAL_HEADERS = exports.MINOR = exports.MAJOR = exports.HTAB_SP_VCHAR_OBS_TEXT = exports.QUOTED_STRING = exports.CONNECTION_TOKEN_CHARS = exports.HEADER_CHARS = exports.TOKEN = exports.HEX = exports.URL_CHAR = exports.USERINFO_CHARS = exports.MARK = exports.ALPHANUM = exports.NUM = exports.HEX_MAP = exports.NUM_MAP = exports.ALPHA = exports.STATUSES_HTTP = exports.H_METHOD_MAP = exports.METHOD_MAP = exports.METHODS_RTSP = exports.METHODS_ICE = exports.METHODS_HTTP = exports.HEADER_STATE = exports.FINISH = exports.STATUSES = exports.METHODS = exports.LENIENT_FLAGS = exports.FLAGS = exports.TYPE = exports.ERROR = void 0;
-const utils_1 = __nccwpck_require__(784);
+const utils_1 = __nccwpck_require__(8944);
 // Emums
 exports.ERROR = {
     OK: 0,
@@ -28805,7 +30527,7 @@ exports["default"] = {
 
 /***/ }),
 
-/***/ 274:
+/***/ 8610:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -28829,7 +30551,7 @@ Object.defineProperty(module, 'exports', {
 
 /***/ }),
 
-/***/ 286:
+/***/ 766:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -28853,7 +30575,7 @@ Object.defineProperty(module, 'exports', {
 
 /***/ }),
 
-/***/ 784:
+/***/ 8944:
 /***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
@@ -28873,14 +30595,2032 @@ function enumToMap(obj, filter = [], exceptions = []) {
 
 /***/ }),
 
-/***/ 6905:
+/***/ 2297:
+/***/ ((module) => {
+
+const wasmModule = new WebAssembly.Module(
+  Buffer.from(
+    'AGFzbQEAAAABQgtgA39/fwBgAX8Bf2ACf38AYAF/AGABfwF+YAJ/fgBgBH9/f38AYAABf2AIf39/f39/f3wAYAN/f38Bf2ACf38BfwKUBBwDZW52CG9uX2Vycm9yAAADZW52Cm9uX2hlYWRlcnMACANlbnYJb25fZmluaXNoAAADZW52EG9uX21lc3NhZ2Vfc3RhcnQAAANlbnYTb25fbWVzc2FnZV9jb21wbGV0ZQAAA2Vudgpvbl9yZXF1ZXN0AAADZW52C29uX3Jlc3BvbnNlAAADZW52CG9uX3Jlc2V0AAADZW52CW9uX21ldGhvZAAAA2VudgZvbl91cmwAAANlbnYLb25fcHJvdG9jb2wAAANlbnYKb25fdmVyc2lvbgAAA2Vudglvbl9zdGF0dXMAAANlbnYJb25fcmVhc29uAAADZW52Dm9uX2hlYWRlcl9uYW1lAAADZW52D29uX2hlYWRlcl92YWx1ZQAAA2Vudgpvbl9jb25uZWN0AAADZW52Cm9uX3VwZ3JhZGUAAANlbnYPb25fY2h1bmtfbGVuZ3RoAAADZW52F29uX2NodW5rX2V4dGVuc2lvbl9uYW1lAAADZW52GG9uX2NodW5rX2V4dGVuc2lvbl92YWx1ZQAAA2Vudghvbl9jaHVuawAAA2Vudgdvbl9ib2R5AAADZW52B29uX2RhdGEAAANlbnYPb25fdHJhaWxlcl9uYW1lAAADZW52EG9uX3RyYWlsZXJfdmFsdWUAAANlbnYLb25fdHJhaWxlcnMAAANlbnYPb25fc3RhdGVfY2hhbmdlAAADQUAGAQMDBwIDBgMEBAEEBAEBAQQBBAQBAQEBAQEBAQEBAQEBAQcJAwIDBQUCAgIFAgICAgICAgEBAQEKAQIDAgICBQMBABEGCQF/AUGAgMAACwedCDkGbWVtb3J5AgAFYWxsb2MAHQVjbGVhcgAeCGNvbXBsZXRlAB8GY3JlYXRlACAHZGVhbGxvYwAhB2Rlc3Ryb3kAIgRmYWlsACMGZmluaXNoACQOZ2V0X2NodW5rX3NpemUAJRJnZXRfY29udGVudF9sZW5ndGgAJg5nZXRfZXJyb3JfY29kZQAnGWdldF9lcnJvcl9kZXNjcmlwdGlvbl9yYXcAKBRnZXRfbWF4X2JvZHlfcGF5bG9hZAApFWdldF9tYXhfaGVhZGVyX2xlbmd0aAAqGWdldF9tYXhfc3RhcnRfbGluZV9sZW5ndGgAKwpnZXRfbWV0aG9kACwKZ2V0X3BhcnNlZAAtDGdldF9wb3NpdGlvbgAuGGdldF9yZW1haW5pbmdfY2h1bmtfc2l6ZQAvHGdldF9yZW1haW5pbmdfY29udGVudF9sZW5ndGgAMAlnZXRfc3RhdGUAMQpnZXRfc3RhdHVzADIdaGFzX2NodW5rZWRfdHJhbnNmZXJfZW5jb2RpbmcAMxRoYXNfY29ubmVjdGlvbl9jbG9zZQA0Fmhhc19jb25uZWN0aW9uX3VwZ3JhZGUANRJoYXNfY29udGVudF9sZW5ndGgANgxoYXNfdHJhaWxlcnMANxVoYXNfdHJhbnNmZXJfZW5jb2RpbmcAOAtoYXNfdXBncmFkZQA5DWlzX2F1dG9kZXRlY3QAOgppc19jb25uZWN0ADsIaXNfZGVidWcAPAlpc19wYXVzZWQAPQppc19yZXF1ZXN0AD4ObWlsb19oYXNfZGVidWcAPwVwYXJzZQBABXBhdXNlAEEFcmVzZXQAQgZyZXN1bWUAQxRzZXRfYWN0aXZlX2NhbGxiYWNrcwBEEXNldF9hY3RpdmVfZXZlbnRzAEUJc2V0X2RlYnVnAEYOc2V0X2lzX2Nvbm5lY3QARw5zZXRfaXNfcmVxdWVzdABIFHNldF9tYXhfYm9keV9wYXlsb2FkAEkVc2V0X21heF9oZWFkZXJfbGVuZ3RoAEoZc2V0X21heF9zdGFydF9saW5lX2xlbmd0aABLFXNldF9zaG91bGRfYXV0b2RldGVjdABMIHNldF9zaG91bGRfY29udGludWVfd2l0aG91dF9kYXRhAE0cc2V0X3Nob3VsZF9tYW5hZ2VfdW5jb25zdW1lZABOFHNldF9zaG91bGRfc2tpcF9ib2R5AE8gc2V0X3Nob3VsZF9zdXNwZW5kX2FmdGVyX2hlYWRlcnMAUBxzaG91bGRfY29udGludWVfd2l0aG91dF9kYXRhAFEYc2hvdWxkX21hbmFnZV91bmNvbnN1bWVkAFIQc2hvdWxkX3NraXBfYm9keQBTHHNob3VsZF9zdXNwZW5kX2FmdGVyX2hlYWRlcnMAVAr7pwJAlgIBBH8CQCACIANPDQAgAS0AACEFAkAgAyACayIHQQNNBEAMAQtBgIKECCAFQYGChAhsIgEgAigAAHMiBmsgBnJBgIGChHhxQYCBgoR4RwRADAELIAJBfHFBBGohAgJAIAdBCU8EQCACIANBCGsiB0sNAQNAQYCChAggAigCACABcyIGayAGckGAgYKEeHFBgIGChHhHDQJBgIKECCACQQRqKAIAIAFzIgZrIAZyQYCBgoR4cUGAgYKEeEcNAiACQQhqIgIgB00NAAsMAQsgAiADTw0CDAELIAIgA08NAQsgA0EBa0EBIQQDQCAFIAItAABGDQEgAkEBaiICIANHDQALIQJBACEECyAAIAI2AgQgACAENgIACyYAAkAgAEEATgRAIABFBEBBASEADAILIABBARBVIgANAQsACyAACzMAIABCADcDKCAAQQA6ABUgAEIANwMwIABCADcDOCAAQgA3A0AgAEIANwNIIABBADYCUAvSAwIDfwF+AkAgACIBLQAkIgBBDk1BAEEBIAB0QYDPAXEbRQRAIAFBAzoAJiABQQI6ACQgAUENOgD0AkEAIQAgAUEAOgB5IAFBp5jAACkAADcAbCABQayYwAApAAA3AHECQCABKQNYIAEpA2CEp0EBcUUEQCABKAL4AiECDAELIAEoAvgCIgJBAToAACACQQVqQQM6AAAgAkEBaiABKAIgNgAAQQYhAAsgACACakEAOgAADAELAn9BACABKQNYIAEpA2CEIgRCyACDUA0AGiAEQgiDQgBSBEAgASgC+AIiAEEEOgAAIABBBWpBADYAACAAQQFqIAEoAiA2AABBCSECCyACIARCwACDUA0AGiABKAL4AiACaiIAQQc6AAAgAEEFakEANgAAIABBAWogASgCIDYAACACQQlqCyECIAFBADoAFiABQQA6ABQCQCABLQBSQQFGBEBBDiEAIAEtABFBAXENAQsgAS0AUCEDIARCAoNQBEAgAyEADAELQQEhACADQQFxRQRAIAMhAAwBCyABKAL4AiACaiIDQQI6AAAgA0EFakEANgAAIANBAWogASgCIDYAACACQQlqIQILIAEgADoAJCABKAL4AiACakEAOgAACwvfAgEDfyMAQeAAayIAJAACQEGAgAQQViICRQ0AIAJBBGstAABBA3FFDQAgAkEAQYCABPwLAAsCQCACRQ0AIABBADYAXCAAQgA3AFQgAEIANwBMIABCADcARCAAQgA3ADwgAEIANwA0IABCADcCHCAAQgA3AiQgAEEANgIsIABCADcADyAAQQA6ABdBgANBCBBVIgFFDQAgAUIANwARIAFBAToAECABQgA3AwggAUKAwICAgIAINwMAIAFCADcAGSABQgA3AB8gASAAKQAzNwAnIAEgACkAOzcALyABIAApAEM3ADcgASAAKQBLNwA/IAEgACkAUzcARyABIAApAFg3AEwgASAAKAIoNgJkIAEgACkCIDcCXCABIAApAhg3AlQgAUHsAGpBAEH/AfwLACABIAI2AvgCIAEgAC8AFjsA8wIgASAAKQAONwDrAiABIAE2AmggAEHgAGokACABDwsACxUAAkAgAEUNACABRQ0AIAAgARBXCws4AQF/IAAEQCAAKALwAiIBBEAgACgC7AIgARBXCyAAKAL4AiIBBEAgAUGAgAQQVwsgAEGAAxBXCwuSAQEBfyAAIAE6ACYgAEECOgAkIABB7ABqIQRB/gEgAyADQf4BTxsiAwRAIAQgAiAD/AoAAAsgACADOgD0AiADIARqQQA6AABBACEDIAApA1ggACkDYIRCAYOnBH8gACgC+AIiAkEBOgAAIAJBBWogAToAACACQQFqIAAoAiA2AABBBgVBAAsgACgC+AJqQQA6AAALrAIBAn8CQAJAAkAgAC0AJCIBQQlNBEBBASABdEEbcQ0BIAFBAkYNAyABQQlGDQILIABBBToAJiAAQQI6ACQgAEEWOgD0AiAAQQA6AIIBIABBgIjAACkAADcAbCAAQYiIwAApAAA3AHQgAEGOiMAAKQAANwB6AkAgACkDWCAAKQNghKdBAXFFBEAgACgC+AIhAQwBCyAAKAL4AiIBQQE6AAAgAUEFakEFOgAAIAFBAWogACgCIDYAAEEGIQILIAEgAmpBADoAAA8LIABBAToAJA8LAn8gACkDWCAAKQNghEIIg1AEQCAAKAL4AiEBQQAMAQsgACgC+AIiAUEEOgAAIAFBBWpBADYAACABQQFqIAAoAiA2AABBCQshAiAAQQE6ACQgASACakEAOgAACwsHACAAKQMwCwcAIAApAygLBwAgAC0AJgsTACAAMQD0AiAAQewAaq1CIIaECwcAIAApAwgLBwAgACgCBAsHACAAKAIACwcAIAAtAEwLBwAgACkDGAsHACAAKAIgCwcAIAApA0ALBwAgACkDOAsHACAALQAkCwcAIAAoAkgL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DQEMAgsgBkEJRg0BCyADQQY6ACYgA0ECOgAkIANB64rAACkAADcAbCADQfOKwAApAAA3AHQgA0H7isAAKQAANwB8IANBgovAACkAADcAgwEMJwsgAEEBaiEAIAlBAWsiCQ0ACwsgAyAHQeQAbCAOQQpsQf4BcWogC2o2AkggIkUNAyA7QgBSBEAgBUEQakGBgARPDTQgAygCICEAIAMoAvgCIAVqQQo6AAAgAygC+AIgBWpBAWogADYAACADKAL4AiAFakEFakEENgAAIAVBCWohBQsgOkIAUgRAIAVBEGpBgYAETw00IAMoAiAhACADKAL4AiAFakELOgAAIAMoAvgCIAVqQQFqIABBBWo2AAAgAygC+AIgBWpBBWpBAzYAACAFQQlqIQULIEJCAFIEQCAFQRBqQYGABE8NNCADKAIgIQAgAygC+AIgBWpBDDoAACADKAL4AiAFakEBaiAAQQlqNgAAIAMoAvgCIAVqQQVqQQM2AAAgBUEJaiEFCyBBUA0DIA0NAyAFQRBqQYCABEsNMyADKAIgIQAgAygC+AIgBWpBDToAACADKAL4AiAFakEBaiAAQQ1qNgAAIAMoAvgCIAVqQQVqIAJBDWs2AAAgBUEJaiEFDAMLIANBDDoAJiADQQI6ACQgA0GKi8AAKQAANwBsIANBkovAACkAADcAdCADQZqLwAApAAA3AHwgA0Gii8AAKQAANwCEASADQaqLwAApAAA3AIwBIANBsYvAACgAADYAkwFBKyEIQZcBDDELIANBBjoAJiADQQI6ACQgA0HSi8AAKQAANwBsIANB2ovAACkAADcAdCADQd+LwAApAAA3AHkMCwsgBC0AAkHUAEcNBCAELQADQdAARw0EIAQtAARBL0cNBCADQRE6ACYgA0ECOgAkIANBhonAACkAADcAbCADQY6JwAApAAA3AHQgA0GWicAAKQAANwB8DAgLIAJBAmohACADLQAkQQJGDScgA0EGOgAkDCcLIANBDDoAJiADQQI6ACQgA0HPisAAKQAANwBsIANB14rAACkAADcAdCADQd+KwAApAAA3AHwgA0HnisAAKAAANgCEAQwcCyADKAIAIAhLDS0gA0EGOgAmIANBAjoAJCADQbuKwAApAAA3AGwgA0HDisAAKQAANwB0IANBy4rAACgAADYAfAwdCyAIRQ0FIAhBAWsgCk8N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KQAANwBsIANBwojAACkAADcAdCADQcqIwAApAAA3AHwMBQsgEyANayITIAtqIRUgCSEHIAYhAAJAA0AgACAKTw0pIAAgBGotAAAtAICGQARAIABBAWohACAHQQFrIgdFDQIMAQsLIANBBjoAJiADQQI6ACQgA0HSiMAAKQAANwBsIANB2ojAACkAADcAdCADQd+IwAApAAA3AHkMBwsgDiAQQQlqRw0CAkAgDiALa0EIRw0AIA0pAAAiLkLIqNGC9cWMlzBRDQIgLkLIqNGC9aWMlzFSDQAgD0UNBCADQRE6ACYgA0ECOgAkIANB54jAACkAADcAbCADQe+IwAApAAA3AHQgA0H3iMAAKQAANwB8IANB/ojAACkAADcAgwEMHgsLIANBBjoAJiADQQI6ACQgA0GeicAAKQAANwBsIANBponAACkAADcAdEEQIQhB/AAMKgsgDw0BIANBEToAJiADQQI6ACQgA0GGicAAKQAANwBsIANBjonAACkAADcAdCADQZaJwAApAAA3AHwMAgsgA0EGOgAmIANBAjoAJCADQa6JwAApAAA3AGwgA0G2icAAKQAANwB0IANBu4nAACkAADcAeQwDCwJAICNFDQAgQEIAUgRAIAVBEGpBgYAETw0qIAMoAiAhACADKAL4AiAFakEIOgAAIAMoAvgCIAVqQQFqIAA2AAAgAygC+AIgBWpBBWogAjYAACAFQQlqIQULID9CAFIEQCAFQRBqQYGABE8NKiADKAIgIQAgAygC+AIgBWpBCToAACADKAL4AiAFakEBaiAAIAZqNgAAIAMoAvgCIAVqQQVqIAk2AAAgBUEJaiEFCyA7QgBSBEAgBUEQakGBgARPDSogAygCICEAIAMoAvgCIAVqQQo6AAAgAygC+AIgBWpBAWogACALajYAACADKAL4AiAFakEFaiATNgAAIAVBCWohBQsgOlANACAFQRBqQYCABEsNKSADKAIgIQAgAygC+AIgBWpBCzoAACADKAL4AiAFakEBaiAAIBVBAWpqNgAAIAMoAvgCIAVqQQVqQQM2AAAgBUEJaiEFCyAOQQJqIQAgAy0AJCECIAMtAExBCkYEQCACQQJGDSEgA0EFOgAkDCELIAJBAkYNICADQQY6ACQMIAtBGCEIQYQBDCYLIAMoAgAgCEsNJiADQQY6ACYgA0ECOgAkIANBpYjAACkAADcAbCADQa2IwAApAAA3AHQgA0GyiMAAKQAANwB5C0EVIQhBgQEMJAsCQAJAAkAgAy0AECIARQRAIAMtABFBAXENAQsgAA0CIB0NAQwGCyAeRQ0EIDhCAFIEQCAFQRBqQYGABE8NJyADKAIgIQAgAygC+AIgBWpBBToAACADKAL4AiAFakEBaiAANgAAIAMoAvgCIAVqQQVqQQA2AAAgBUEJaiEFCyA0UA0EIAVBEGpBgIAESw0mIAMoAiAhACADKAL4AiAFakEDOgAAIAMoAvgCIAVqQQFqIAA2AAAgAygC+AIgBWpBBWpBADYAACAFQQlqIQUMBAsgOUIAUgRAIAVBEGpBgYAETw0mIAMoAiAhACADKAL4AiAFakEGOgAAIAMoAvgCIAVqQQFqIAA2AAAgAygC+AIgBWpBBWpBADYAACAFQQlqIQULIDRQDQQgBUEQakGAgARLDSUgAygCICEAIAMoAvgCIAVqQQM6AAAgAygC+AIgBWpBAWogADYAACADKAL4AiAFakEFakEANgAAIAVBCWohBQwECwJAIApBBE0EQCAKQQFNDQMMAQsgBC0ABEEvRw0AIAQoAABByKjRggVHDQAgA0EAOgARAkAgHUUNACA5QgBSBEAgBUEQakGBgARPDScgAygCICEAIAMoAvgCIAVqQQY6AAAgAygC+AIgBWpBAWogADYAACADKAL4AiAFakEFakEANgAAIAVBCWohBQsgNFANACAFQRBqQYCABEsNJiADKAIgIQAgAygC+AIgBWpBAzoAACADKAL4AiAFakEBaiAANgAAIAMoAvgCIAVqQQVqQQA2AAAgBUEJaiEFC0EAIQEgAy0AJEECRg0eIANBBDoAJAweCyAELwAAQY0URw0BC0EAIQFBAiEADBsLIANBAToAEQJAIB5FDQAgOEIAUgRAIAVBEGpBgYAETw0kIAMoAiAhACADKAL4AiAFakEFOgAAIAMoAvgCIAVqQQFqIAA2AAAgAygC+AIgBWpBBWpBADYAACAFQQlqIQULIDRQDQAgBUEQakGAgARLDSMgAygCICEAIAMoAvgCIAVqQQM6AAAgAygC+AIgBWpBAWogADYAACADKAL4AiAFakEFakEANgAAIAVBCWohBQtBACEBIAMtACRBAkYNGyADQQM6ACQMGwtBACEBIAMtACRBAkYNGiADQQM6ACQMGgtBACEBIAMtACRBAkYNGSADQQQ6ACQMGQsgA0EDOgAmIANBAjoAJCADQaeYwAApAAA3AGwgA0GsmMAAKQAANwBxDBMLIAhFDQtBACEAQX8hBwJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAA0ACQAJAAkACQAJAAkACQAJAIAAgBGoiCS0AACIBQQ1GBEAgCEEBayAARg04IABBAWoiDyAKTw0zIAlBAWoiAS0AAEEKRw0BAkACQAJAAkAgAEUEQCAkDQIgBUEaakGAgARNDQFBASEBQQIhAAw1CyAMQTo6AHQgDEFAayAMQfQAaiAEIAEQHCAMKAJAQQFxBEAgDCgCRCIBIARHDQQLDCgLIAMtAEwgAygCSCIBIAMtABEiAhshBkEAIQBBAEECIAMtAE9rIAMtAE0iCRshByADKAIgQQJqIQ4gAy0AUEF/c0EBcSELAkAgAy0AUkEBRw0AIAMtAFFBAXFFDQAgAiABQeUARnIhAAsgAykDKCEuIAMtAFMhASADKAL4AiAFakEQOgAAIAMoAvgCIAVqQQFqIA42AAAgAygC+AIgBWpBBWogBjsAACADKAL4AiAFakEHaiALOgAAIAMoAvgCIAVqQQhqIAA6AAAgAygC+AIgBWpBCWogAToAACADKAL4AiAFakEKaiAHOgAAIAMoAvgCIAVqQQtqIC5CACAJGzcAACAFQRNqIQUgAy0AJEECRg0BCyADQQc6ACQLIANBAToAFCADLQASIQFBAiEADDELIAEgBGsiDkEBaiEGAkACQAJAIAQtAAAiAUHDAGsOMwEAAAAAAAAAAAAAAAAAAAAAAQEAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAABAQALQQAhAQNAIAEgCkYNNiABIARqLQAALQCAgEAEQCAOIAFBAWoiAUYNAwwBCwsMJgsgCiAOSQ00IAMoAkghCwJAAkACQAJAIA5BB2sOCwMkJAIkJCQAJCQBJAsgDiECIAQgAUEgckHjAEcNJBogBCAELQABQSByQe8ARw0kGiAEIAQtAAJBIHJB7gBHDSQaIAQgBC0AA0EgckH0AEcNJBogBCAELQAEQSByQeUARw0kGiAEIAQtAAVBIHJB7gBHDSQaIAQgBC0ABkEgckH0AEcNJBogBCAELQAHQS1HDSQaIAQgBC0ACEEgckHsAEcNJBogBCAELQAJQSByQeUARw0kGiAEIAQtAApBIHJB7gBHDSQaIAQgBC0AC0EgckHnAEcNJBogBCAELQAMQSByQfQARw0kGiAEIAQtAA1BIHJB6ABHDSQaIAMtAE4NBiALQX5xQcwBRyALQeQAa0HkAE9xRQRAIANBBzoAJiADQQI6ACQgA0GVjMAAKQAANwBsIANBnYzAACkAADcAdCADQaWMwAApAAA3AHwgA0GtjMAAKQAANwCEASADQbWMwAApAAA3AIwBIANBvYzAACkAADcAlAEgA0HFjMAAKQAANwCcASADQc2MwAAoAAA2AKQBQTwhCEGoAQw8CwJAAkAgAy0ATUUEQEEPIQEgACAGTQ0jIAlBAWsiAS0AACICQSBGIgtFIAJBCUdxDQIgAEEQSw0BDCILIANBDToAJiADQQI6ACQgA0GSjcAAKQAANwBsIANBmo3AACkAADcAdCADQaKNwAApAAA3AHwgA0GqjcAAKQAANwCEASADQbGNwAApAAA3AIsBDCALIAYgCk8NOCAEIAZqLQAAQSBHDSAgBC0AECICQQlGDSAgAkEgRg0gIAEtAAAiAUEJRg0gIAFBIEYNIEEQIQEgACEJDCMLQRAgBiAEIAZqLQAAIgJBIEYbIgEgAE8NHSABIARqLQAAIgZBCUYNHCAAIQkgBkEgRg0cDCILIA4hAiAEIAFBIHJB9ABHDSMaIAQgBC0AAUEgckHyAEcNIxogBCAELQACQSByQeEARw0jGiAEIAQtAANBIHJB7gBHDSMaIAQgBC0ABEEgckHzAEcNIxogBCAELQAFQSByQeYARw0jGiAEIAQtAAZBIHJB5QBHDSMaIAQgBC0AB0EgckHyAEcNIxogBCAELQAIQS1HDSMaIAQgBC0ACUEgckHlAEcNIxogBCAELQAKQSByQe4ARw0jGiAEIAQtAAtBIHJB4wBHDSMaIAQgBC0ADEEgckHvAEcNIxogBCAELQANQSByQeQARw0jGiAEIAQtAA5BIHJB6QBHDSMaIAQgBC0AD0EgckHuAEcNIxogBCAELQAQQSByQecARw0jGiADLQBNDQYgC0HMAWtBAkkNGiALQbACRg0aIAtB5ABrQeQASQ0aIABBE00EQEESIQEgAEETRw0ZDBgLIAYgCk8NNiAEIAZqLQAAQSBHDRcgBC0AEyIBQQlGDRcgAUEgRg0XIAlBAWstAAAiAUEJRg0XIAFBIEYNF0ETIQEgACEJDBkLIA4hAiAEIAFBIHJB4wBHDSIaIAQgBC0AAUEgckHvAEcNIhogBCAELQACQSByQe4ARw0iGiAEIAQtAANBIHJB7gBHDSIaIAQgBC0ABEEgckHlAEcNIhogBCAELQAFQSByQeMARw0iGiAEIAQtAAZBIHJB9ABHDSIaIAQgBC0AB0EgckHpAEcNIhogBCAELQAIQSByQe8ARw0iGiAEIAQtAAlBIHJB7gBHDSIaIABBDE0EQEELIQEgAEEMRw0UDBMLIAYgCk8NNSAEIAZqLQAAQSBHDRIgBC0ADCIBQQlGDRIgAUEgRg0SIAlBAWstAAAiAUEJRg0SIAFBIEYNEkEMIQEgACEJDBQLAkACQCABQdQAaw4iAAEiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIAASILAkAgBC0AAUEgckHyAEcNACAELQACQSByQeEARw0AIAQtAANBIHJB6QBHDQAgBC0ABEEgckHsAEcNACAELQAFQSByQeUARw0AIAQtAAZBIHJB8gBHDQAgA0EBOgBTIABBCU0EQEEIIQEgAEEJRw0TDBILIAYgCk8NNiAEIAZqLQAAQSBHDREgBC0ACSIBQQlGDREgAUEgRg0RIAlBAWstAAAiAUEJRg0RIAFBIEYNEUEJIQEgACEJDCYLIA4hAiAEIAFB1QBHDSIaCyAOIQIgBCAELQABQSByQfAARw0hGiAEIAQtAAJBIHJB5wBHDSEaIAQgBC0AA0EgckHyAEcNIRogBCAELQAEQSByQeEARw0hGiAEIAQtAAVBIHJB5ABHDSEaIAQgBC0ABkEgckHlAEcNIRogAEEJTQRAQQghASAAQQlHDQ0MDAsgBiAKTw00IAQgBmotAABBIEcNCyAELQAJIgFBCUYNCyABQSBGDQsgCUEBay0AACIBQQlGDQsgAUEgRg0LQQkhASAAIQkMDQsgGkUNISAOQQJqIgEgAE8NCCAGIApPDTMgBCAGai0AAEEgRw0IIAEgBGotAAAiAkEJRg0IIAJBIEYNCCAJQQFrLQAAIgJBCUYNCCAAIQkgAkEgRw0jDAgLAkAgAUEgTwRAIAFB/wBGDQEMCAsgAUEJRg0HCyAAIApPDSMgAEECTQRAIABBAWohAEEAIQgDQCAEIAhqLQAAQTpGDQcgACAIQQFqIghHDQALDCQLQYCChAggBCgAACIBQbr06NEDc2sgAXJBgIGChHhxQYCBgoR4RwRAIABBAWohAEEAIQgDQCAEIAhqLQAAQTpGDQcgACAIQQFqIghHDQALDCQLQQQgBEEDcSICayEBIABBCEkNAyAJQQFqIQIgASAEaiEIIAEgAEEHayIASw0EIAAgBGohAANAQYCChAggCCgCACIBQbr06NEDc2sgAXJBgIGChHhxQYCBgoR4Rw0FQYCChAggCEEEaigCACIBQbr06NEDc2sgAXJBgIGChHhxQYCBgoR4Rw0FIAhBCGoiCCAATQ0ACwwECyADQQY6ACYgA0ECOgAkIANBrorAACkAADcAbCADQbOKwAApAAA3AHEMKgsgA0EHOgAmIANBAjoAJEHJACEIIANB7ABqQbmNwABByQD8CgAAQbUBDDQLIANBCDoAJiADQQI6ACRByQAhCCADQewAakGgkMAAQckA/AoAAEG1AQwzCyAAIAFJDR8gBEEEaiEBIABBA2shAEEAIAJrIQgDQCABIAhqLQAAQTpGDQIgCEEBaiIIIABHDQALDB8LIAIgCE0NHgNAIAgtAABBOkYNASAIIAlGIAhBAWohCEUNAAsMHgsgA0EGOgAmIANBAjoAJCADQaGSwAApAAA3AGwgA0GpksAAKQAANwB0IANBsZLAACkAADcAfCADQbmSwAApAAA3AIQBIANBwZLAACgAADYAjAEMFgsgB0EBaiEHIAggAEEBaiIARw0BDB0LCyAAAn8CQCAAIAZNDQADQCAEIAZqLQAAIgFBCUcgAUEgR3ENASAAIAZBAWoiBkcNAAsgAAwBCyAGCyIBTQRAIAAhCQwaCwNAIAcgCk8NKgJAIAQgB2otAAAiAkEJRg0AIAJBIEYNACAHQQFqIQkMGwsgASAHSSAHQQFrIQcNAAsgASEJDBkLQQghAQNAIAEgBGotAAAiBkEJRyAGQSBHcQ0BIAAgAUEBaiIBRw0ACyAAIQELAn8gACAAIAFNDQAaAkADQCAHIApPDSogBCAHai0AACIGQQlHIAZBIEdxDQEgASAHSSAHQQFrIQcNAAsgAQwBCyAHQQFqCyIJIAFGDQEgCUEBaiEPCyAEQQFrIRAgBCAPaiETIAEhBwNAAkAgByAJTw0AIAcgCk8NKCAEIAdqLQAAIgJBCUYEQCAHQQFqIQcMAgsgAkEgRw0AIAdBAWohBwwBCwJAIAcgCUYNAAJAAkACfyAJIAkgCk8NABogCSAHIAlLDQAaIAxBLDoAdCAMQThqIAxB9ABqIAQgB2oiBiATEBwgDCgCOEEBcSILBH8gDCgCPCAGawUgAgsgB2ogCSALGwsiCyAHQQFqIgZNDQAgByAKTw0qIAQgB2otAABBIEcNACAGIApPDSogBCAGai0AACICQQlGDQAgAkEgRg0AIAtBAWsiAiAKTw0qIAIgBGotAAAiDUEJRg0AIAshAiANQSBHDQELAkACfwJAIAcgC08NACAHIAogByAKSxshAgNAIAIgB0YNLSAEIAdqLQAAIgZBCUcgBkEgR3ENASALIAdBAWoiB0cNAAsgCwwBCyAHCyIGIAsiAk8NAANAIAJBAWsiByAKTw0rIAIgEGotAAAiDUEJRyANQSBHcQ0BIAciAiAGSw0ACyAGIQILIAIgBkcNACADQQY6ACYgA0ECOgAkIANBxZHAACkAADcAbCADQc2RwAApAAA3AHQgA0HVkcAAKQAANwB8IANB2pHAACkAADcAgQEMHQsCQAJAAn8gAiACIApPIhUNABogAiACIAZJDQAaIAxBLzoAdCAMQTBqIAxB9ABqIAQgBmoiDSACIARqQQFqEBwgDCgCMEEBcSIPBH8gDCgCNCANawUgBwsgBmogAiAPGwsiDSAGRg0AIAYgDU8NASAKIAZrIgdBACAHIApNGyEHIA0gBmshDyAEIAZqIQYDQCAHRQ0rIAYtAAAtAICAQEUNASAHQQFrIQcgBkEBaiEGIA9BAWsiDw0ACwwBCyADQQY6ACYgA0ECOgAkIANB4pHAACkAADcAbCADQeqRwAApAAA3AHQgA0HykcAAKQAANwB8IANB+pHAACgAADYAhAEMHAsCQCACIA1NDQAgDUEBaiEHAkAgFUUEQCAMQS86AHQgDEEoaiAMQfQAaiAEIAdqIgYgBiACIA1rahAcIAwoAihBAXENAQsgAiAHRg0AIAIgB00NAQNAIAcgCk8NKyAEIAdqLQAALQCAgEBFDQEgB0EBaiIHIAJHDQALDAELIANBBjoAJiADQQI6ACQgA0HikcAAKQAANwBsIANB6pHAACkAADcAdCADQfKRwAApAAA3AHwgA0H6kcAAKAAANgCEAQwcCyAJIAtGDQAgC0EBaiEHDAELCyADQQE6AFIMFgsgA0EGOgAmIANBAjoAJCADQcWRwAApAAA3AGwgA0HNkcAAKQAANwB0IANB1ZHAACkAADcAfCADQdqRwAApAAA3AIEBDBkLQQghAQNAIAEgBGotAAAiAkEJRyACQSBHcQ0BIAAgAUEBaiIBRw0ACyAAIQELAn8gACAAIAFNDQAaAkADQCAHIApPDSYgBCAHai0AACICQQlHIAJBIEdxDQEgASAHSSAHQQFrIQcNAAsgAQwBCyAHQQFqCyIJIAFHDRMgA0EGOgAmIANBAjoAJCADQaiRwAApAAA3AGwgA0GwkcAAKQAANwB0IANBuJHAACkAADcAfCADQb2RwAApAAA3AIEBDBcLQQshAQNAIAEgBGotAAAiBkEJRyAGQSBHcQ0BIAAgAUEBaiIBRw0ACyAAIQELAn8gACAAIAFNDQAaAkADQCAHIApPDSQgBCAHai0AACIGQQlHIAZBIEdxDQEgASAHSSAHQQFrIQcNAAsgAQwBCyAHQQFqCyIJIAFHDQAMAQsgCSAKSw0gIAEgCUsNICABIARqIQYCQAJAAkACQCAJIAFrQQVrDgYAAwIDAwEDCyAGLQAAQSByQeMARw0CIAYtAAFBIHJB7ABHDQIgBi0AAkEgckHvAEcNAiAGLQADQSByQfMARw0CIAYtAARBIHJB5QBHDQIgA0EBOgBQDBMLIAYtAABBIHJB6wBHDQEgBi0AAUEgckHlAEcNASAGLQACQSByQeUARw0BIAYtAANBIHJB8ABHDQEgBi0ABEEtRw0BIAYtAAVBIHJB4QBHDQEgBi0ABkEgckHsAEcNASAGLQAHQSByQekARw0BIAYtAAhBIHJB9gBHDQEgBi0ACUEgckHlAEcNAQwSCyAGLQAAQSByQfUARw0AIAYtAAFBIHJB8ABHDQAgBi0AAkEgckHnAEcNACAGLQADQSByQfIARw0AIAYtAARBIHJB4QBHDQAgBi0ABUEgckHkAEcNACAGLQAGQSByQeUARw0AIANBAToAUQwRCyAEQQFrIQ0gBCAJakEBaiEQIAEhBwNAAkAgByAJTw0AIAQgB2otAAAiAkEJRgRAIAdBAWohBwwCCyACQSBHDQAgB0EBaiEHDAELIAcgCUYNEQJAAkACfyAJIAkgCk8NABogCSAHIAlLDQAaIAxBLDoAdCAMQSBqIAxB9ABqIAQgB2oiBiAQEBwgDCgCIEEBcSILBH8gDCgCJCAGawUgAgsgB2ogCSALGwsiCyAHQQFqIgZNDQAgByAKTw0jIAQgB2otAABBIEcNACAGIApPDSMgBCAGai0AACICQQlGDQAgAkEgRg0AIAtBAWsiAiAKTw0jIAIgBGotAAAiD0EJRg0AIAshAiAPQSBHDQELAkACfwJAIAcgC08NACAHIAogByAKSxshAgNAIAIgB0YNJiAEIAdqLQAAIgZBCUcgBkEgR3ENASALIAdBAWoiB0cNAAsgCwwBCyAHCyIGIAsiAk8NAANAIAJBAWsiByAKTw0kIAIgDWotAAAiD0EJRyAPQSBHcQ0BIAciAiAGSw0ACyAGIQILIAIgBkcNAAwCCyACIApLDSEgAiAGSQ0hIAQgBmohBwJAAkACQAJAAkAgAiAGayIPQQVrDgYAAwEDAwIDCyAHLQAAQSByQeMARw0CIActAAFBIHJB7ABHDQIgBy0AAkEgckHvAEcNAiAHLQADQSByQfMARw0CIActAARBIHJB5QBHDQIgA0EBOgBQDAMLIActAABBIHJB9QBHDQEgBy0AAUEgckHwAEcNASAHLQACQSByQecARw0BIActAANBIHJB8gBHDQEgBy0ABEEgckHhAEcNASAHLQAFQSByQeQARw0BIActAAZBIHJB5QBHDQEgA0EBOgBRDAILIActAABBIHJB6wBHDQAgBy0AAUEgckHlAEcNACAHLQACQSByQeUARw0AIActAANBIHJB8ABHDQAgBy0ABEEtRw0AIActAAVBIHJB4QBHDQAgBy0ABkEgckHsAEcNACAHLQAHQSByQekARw0AIActAAhBIHJB9gBHDQAgBy0ACUEgckHlAEYNAQsCQCACIAZGDQAgAiAGTQ0BA0AgBy0AAC0AgIBARQ0BIAdBAWohByAPQQFrIg8NAAsMAQsgA0EGOgAmIANBAjoAJCADQYmRwAApAAA3AGwgA0GRkcAAKQAANwB0IANBmZHAACkAADcAfCADQaCRwAApAAA3AIMBDBgLIAkgC0YNESALQQFqIQcMAAsACyADQQY6ACYgA0ECOgAkIANB6ZDAACkAADcAbCADQfGQwAApAAA3AHQgA0H5kMAAKQAANwB8IANBgZHAACkAADcAhAFBICEIQYwBDCMLQRIhAQNAIAEgBGotAAAiBkEJRyAGQSBHcQ0BIAAgAUEBaiIBRw0ACyAAIQELAn8gACAAIAFNDQAaAkADQCAHIApPDSAgBCAHai0AACIGQQlHIAZBIEdxDQEgASAHSSAHQQFrIQcNAAsgAQwBCyAHQQFqCyIJIAFHDQAgA0EGOgAmIANBAjoAJCADQcGOwAApAAA3AGwgA0HJjsAAKQAANwB0IANB0Y7AACkAADcAfCADQdmOwAApAAA3AIQBIANB4I7AACkAADcAiwEMBAsgA0EBOgBOIAkgCksNHCABIAlLDRwCQCAJIAFrQQdGBEAgASAEaiIGNQAAIAZBBmoxAABCMIYgBkEEajMAAEIghoSEQuPQ1fO2rZkyUQ0BCyAEQQFrIQ8gBCAJakEBaiEQIAMtAE8hDSABIQcDQAJAIAcgCU8NACAEIAdqLQAAIgJBCUYEQCAHQQFqIQcMAgsgAkEgRw0AIAdBAWohBwwBCyAHIAlGDQ4CQCAJIgYgCk8NACAGIAdJDQAgDEEsOgB0IAxBGGogDEH0AGogBCAHaiIGIBAQHCAMKAIYQQFxIgsEfyAMKAIcIAZrBSACCyAHaiAJIAsbIQYLAkACQCAHQQFqIgsgBk8NACAHIApPDSAgBCAHai0AAEEgRw0AIAogC00NICAEIAtqLQAAIgJBCUYNACACQSBGDQAgBkEBayICIApPDSAgAiAEai0AACITQQlGDQAgBiECIBNBIEcNAQsCfwJAIAYgB00NACAHIAogByAKSxshAgNAIAIgB0YNIiAEIAdqLQAAIgtBCUcgC0EgR3ENASAGIAdBAWoiB0cNAAsgBgwBCyAHCyELAkAgCyAGIgJPDQADQCACQQFrIgcgCk8NISACIA9qLQAAIhNBCUcgE0EgR3ENASAHIgIgC0sNAAsgCyECCyACIAtHDQAgA0EGOgAmIANBAjoAJCADQcGOwAApAAA3AGwgA0HJjsAAKQAANwB0IANB0Y7AACkAADcAfCADQdmOwAApAAA3AIQBIANB4I7AACkAADcAiwEMBgsgA0EBOgBOIAIgCksNHiACIAtJDR4CQAJAIAIgC2tBB0cNACAEIAtqIgctAABBIHJB4wBHDQAgBy0AAUEgckHoAEcNACAHLQACQSByQfUARw0AIActAANBIHJB7gBHDQAgBy0ABEEgckHrAEcNACAHLQAFQSByQeUARw0AIActAAZBIHJB5ABHDQAgDUEBcUUEQEEBIQ0gA0EBOgBPDAILIANBDjoAJiADQQI6ACRB6wAhCCADQewAakHojsAAQesA/AoAAEHXAQwkCyANQQFxQQAhDUUNACADQQ46ACYgA0ECOgAkQc0AIQggA0HsAGpB04/AAEHNAPwKAABBuQEMIwsgBiAJRg0OIAZBAWohBwwACwALIAMtAE9FBEAgA0EBOgBPDA0LIANBDjoAJiADQQI6ACRB6wAhCCADQewAakHojsAAQesA/AoAAEHXAQwgCyADQQg6ACYgA0ECOgAkIANBgo7AACkAADcAbCADQYqOwAApAAA3AHQgA0GSjsAAKQAANwB8IANBmo7AACkAADcAhAEgA0GijsAAKQAANwCMASADQaqOwAApAAA3AJQBIANBso7AACkAADcAnAEgA0G5jsAAKQAANwCjAUE/IQhBqwEMHwsgAEERSQ0AIAJBIEcNACAELQAQIgFBCUYNACABQSBGDQBBECEBIAAhCSALRQ0FC0EPIQECQANAIAEgBGotAAAiAkEJRyACQSBHcQ0BIAAgAUEBaiIBRw0ACyAAIQELAn8gACAAIAFNDQAaAkADQCAHIApPDRwgBCAHai0AACICQQlHIAJBIEdxDQEgASAHSSAHQQFrIQcNAAsgAQwBCyAHQQFqCyIJIAFHDQQgA0EGOgAmIANBAjoAJCADQdGMwAApAAA3AGwgA0HZjMAAKQAANwB0IANB4YzAACkAADcAfCADQemMwAApAAA3AIQBIANB8YzAACgAADYAjAEMAwtBJyEIQZMBDBwLQQ8hAQNAIAEgBGotAAAiAkEJRyACQSBHcQ0BIAAgAUEBaiIBRw0ACyAAIQELAn8gACAAIAFNDQAaA0AgByAKTw0YAkAgBCAHai0AACICQQlGDQAgAkEgRg0AIAdBAWoMAgsgASAHSSAHQQFrIQcNAAsgAQsiCSABRw0BIANBBjoAJiADQQI6ACQgA0HRjMAAKQAANwBsIANB2YzAACkAADcAdCADQeGMwAApAAA3AHwgA0HpjMAAKQAANwCEASADQfGMwAAoAAA2AIwBC0EkIQhBkAEMGQsgCSABayIGQRNNBEBCACEuIAEgCUkEQCAKIAFrIgJBACACIApNGyEHIAEgBGohAgNAIAdFDRcgAi0AAEEwayILQf8BcUEKTwRAIANBDToAJiADQQI6ACQgA0H1jMAAKQAANwBsIANB/YzAACkAADcAdCADQYWNwAApAAA3AHwgA0GKjcAAKQAANwCBAQwMCyAuQgp+IAutQv8Bg3whLiAHQQFrIQcgAkEBaiECIAZBAWsiBg0ACwsgAyAuNwM4IAMgLjcDKCADQQE6AE0MBQsgA0ENOgAmIANBAjoAJCADQfWMwAApAAA3AGwgA0H9jMAAKQAANwB0IANBhY3AACkAADcAfCADQYqNwAApAAA3AIEBDAgLIA4hAiAECyEBAkADQCABLQAALQCAgEAEQCABQQFqIQEgAkEBayICDQEMAgsLDAQLIBpFDQACQCAOQQJqIgEgAE8NACAGIApPDRMgBCAGai0AAEEgRw0AIAEgBGotAAAiAkEJRg0AIAJBIEYNACAJQQFrLQAAIgJBCUYNACAAIQkgAkEgRw0DCwJAIAAgBk0NAANAIAQgBmotAAAiAUEJRyABQSBHcQ0BIAAgBkEBaiIGRw0ACyAAIQYLIAAgBk0NAAJAA0AgByAKTw0UIAQgB2otAAAiAUEJRyABQSBHcQ0BIAYgB0kgB0EBayEHDQALIAYMAgsgB0EBagwBCyAACyEJIAYhAQsgJkUEQCAFQRBqQYCABEsNFSADKAIgIQIgAygC+AIgBWpBDjoAACADKAL4AiAFakEBaiACNgAAIAMoAvgCIAVqQQVqIA42AAAgBUEJaiEFCyAFICVFDQcaIAVBEGpBgIAESw0UIAkgAWshByADKAIgIAFqIRdBDyEBDAYLIANBBjoAJiADQQI6ACQgA0H+kcAAKQAANwBsIANBhpLAACkAADcAdCADQY6SwAApAAA3AHwgA0GWksAAKQAANwCEASADQZ2SwAAoAAA2AIsBQSMhCEGPAQwSCyADKAIEIAhLDRIgA0EGOgAmIANBAjoAJCADQYGMwAApAAA3AGwgA0GJjMAAKQAANwB0IANBkYzAACgAADYAfAwCC0EcIQhBiAEMEAtBHSEIQYkBDA8LQRQhCEGAAQwOC0EfIQhBiwEMDQsgAygC+AIgBWogAToAACADKAL4AiAFakEBaiAXNgAAIAMoAvgCIAVqQQVqIAc2AAAgBUEJagshBUEAIQEgAEECaiIADQQMBQtBDSEIQfkADAoLAkAgFkUNACAzQgBSBEAgBUFwSA0MIAMoAiAhASADKAL4AiAFaiIAQQQ6AAAgAEEFakEANgAAIABBAWogAUECajYAACAFQQlqIQULIDJQDQAgBUFwSA0LIAMoAiAhASADKAL4AiAFaiIAQQc6AAAgAEEFakEANgAAIABBAWogAUECajYAACAFQQlqIQULIANBADoAFiADQQA6ABQCQAJAIAMtAFJBAUYEQCADLQARQQFxDQELIAMtAFANAUECIQAgAy0AJEECRw0CQQAhAQwEC0ECIQBBACEBIAMtACRBAkYNAyADQQ46ACQMAwsgGUUNASAFQXBIDQogAygCICEBIAMoAvgCIAVqIgBBAjoAACAAQQVqQQA2AAAgAEEBaiABNgAAIAVBCWohBQwBC0EAIQEgA0EAOgAkDAELQQIhAEEAIQEgAy0AJEECRg0AIANBAToAJAsgAyADKAIgIABqNgIgIAAgCksNAiAIIABrIQggACAEaiEEIAogAGshCgtBASEXIAFBAXENBiADLQAlQQFxRQ0ACwwFCwALAAsgAygC+AJBADoAAAwDCyADQQY6ACYgA0ECOgAkIANBlojAACkAADcAbCADQZ2IwAApAAA3AHNBDyEIQfsACyADIAg6APQCQQAhFyADakEAOgAACyADIAMpAxggAygCICIBrXw3AxgCQCADLQATRQ0AIAMoAvACIgAEQCADKALsAiAAEFcLIANCADcC7AIgASAUTw0AAkACQCAKRQRAQQEhCAwBCyAKQQEQVSIIRQ0BIApFDQAgCCAEIAr8CgAACyADIAg2AuwCIAMgCjYC8AIMAQsACwJAAkAgLUIBg1AgF3IEQCAhRQ0BDAILIAVB+v8Da0H//3tJDQAgAygC+AIgBWoiAEEBOgAAIABBAWogAygCIDYAACAAQQVqIAMtACY6AAAgBUEGaiEFCyADKAL4AiAFakEAOgAACwJAIAMpA1giLVANACAtQgGDIS4gLUKAgAKDIS8gLUICgyEwIC1CBIMhMiAtQgiDITMgLUIQgyE0IC1CIIMhNSAtQsAAgyE2IC1CgAGDITEgLUKAAoMhOCAtQoAEgyE5IC1CgAiDITogLUKAEIMhOyAtQoAggyE8IC1CgMAAgyE9IC1CgIABgyE+IC1CgIAEgyE/IC1CgIAIgyFAIC1CgIAQgyFBIC1CgIAggyFCIC1CgIDAAIMhQyAtQoCAgAGDIUQgLUKAgIACgyFFIC1CgICABIMhRiAtQoCAgAiDITcgLUKAgIAQgyFHIC1CgICAIIMhSCAtQoCAgMAAgyEtIAMoAmghBiADKAL4AiEJQQAhBANAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAIAQgCWoiAC0AAEEBaw4cAAIDBAUGBwgJCgsMDQ4PARAREhMUFRYXGBkaGx8LQQYhAiAuUA0bIAYgAEEBaigAAEEAEAAgBEEGaiEEDB0LQRMhAiAvUA0aIAYgAEEBaigAACAAQQVqLwAAIABBB2otAABBAEcgAEEIai0AAEEARyAAQQlqLQAAQQBHIABBCmotAAAgAEELaikAALoQASAEQRNqIQQMHAtBCSECIDBQDRkgBiAAQQFqKAAAIABBBWooAAAQAiAEQQlqIQQMGwtBCSECIDJQDRggBiAAQQFqKAAAIABBBWooAAAQAyAEQQlqIQQMGgtBCSECIDNQDRcgBiAAQQFqKAAAIABBBWooAAAQBCAEQQlqIQQMGQtBCSECIDRQDRYgBiAAQQFqKAAAIABBBWooAAAQBSAEQQlqIQQMGAtBCSECIDVQDRUgBiAAQQFqKAAAIABBBWooAAAQBiAEQQlqIQQMFwtBCSECIDZQDRQgBiAAQQFqKAAAIABBBWooAAAQByAEQQlqIQQMFgtBCSECIDFQDRMgBiAAQQFqKAAAIABBBWooAAAQCCAEQQlqIQQMFQtBCSECIDhQDRIgBiAAQQFqKAAAIABBBWooAAAQCSAEQQlqIQQMFAtBCSECIDlQDREgBiAAQQFqKAAAIABBBWooAAAQCiAEQQlqIQQMEwtBCSECIDpQDRAgBiAAQQFqKAAAIABBBWooAAAQCyAEQQlqIQQMEgtBCSECIDtQDQ8gBiAAQQFqKAAAIABBBWooAAAQDCAEQQlqIQQMEQtBCSECIDxQDQ4gBiAAQQFqKAAAIABBBWooAAAQDSAEQQlqIQQMEAtBCSECID1QDQ0gBiAAQQFqKAAAIABBBWooAAAQDiAEQQlqIQQMDwtBCSECID5QDQwgBiAAQQFqKAAAIABBBWooAAAQDyAEQQlqIQQMDgtBCSECID9QDQsgBiAAQQFqKAAAIABBBWooAAAQECAEQQlqIQQMDQtBCSECIEBQDQogBiAAQQFqKAAAIABBBWooAAAQESAEQQlqIQQMDAtBCSECIEFQDQkgBiAAQQFqKAAAIABBBWooAAAQEiAEQQlqIQQMCwtBCSECIEJQDQggBiAAQQFqKAAAIABBBWooAAAQEyAEQQlqIQQMCgtBCSECIENQDQcgBiAAQQFqKAAAIABBBWooAAAQFCAEQQlqIQQMCQtBCSECIERQDQYgBiAAQQFqKAAAIABBBWooAAAQFSAEQQlqIQQMCAtBCSECIEVQDQUgBiAAQQFqKAAAIABBBWooAAAQFiAEQQlqIQQMBwtBCSECIEZQDQQgBiAAQQFqKAAAIABBBWooAAAQFyAEQQlqIQQMBgtBCSECIDdQDQMgBiAAQQFqKAAAIABBBWooAAAQGCAEQQlqIQQMBQtBCSECIEdQDQIgBiAAQQFqKAAAIABBBWooAAAQGSAEQQlqIQQMBAtBCSECIEhQDQEgBiAAQQFqKAAAIABBBWooAAAQGiAEQQlqIQQMAwtBCSECIC1CAFINAQsgAiAEaiEEDAELIAYgAEEBaigAACAAQQVqKAAAEBsgBEEJaiEEDAALAAsgICAYQQBHcUUNACARIBgQVwsgDEGQAWokACABCwkAIABBAToAJQuFAQAgAEEAOwEkIAFFBEAgAEIANwMYCyAAQQA6APQCIABBADoAbCAAQQA6ACYgACgC8AIiAQRAIAAoAuwCIAEQVwsgAEIANwMoIABBADsAFSAAQgA3AuwCIABCADcDMCAAQgA3AzggAEIANwNAIABCADcDSCAAQQA2AlAgACgC+AJBADoAAAsJACAAQQA6ACULCQAgACABNwNYCwkAIAAgATcDYAsJACAAIAE6ABcLCQAgACABOgAVCwkAIAAgAToAEQsJACAAIAE3AwgLCQAgACABNgIECwkAIAAgATYCAAsJACAAIAE6ABALCQAgACABOgAUCwkAIAAgAToAEwsJACAAIAE6ABYLCQAgACABOgASCwcAIAAtABQLBwAgAC0AEwsHACAALQAWCwcAIAAtABIL9AIBBX8gAUEJTwRAAkAgAEHN/3tBECABIAFBEE0bIgJrTw0AIAJBECAAQQtqQXhxIABBC0kbIgRqQQxqEFYiAEUNACAAQQhrIQECQCACQQFrIgMgAHFFBEAgASEADAELIABBBGsiBSgCACIGQXhxIAAgA2pBACACa3FBCGsiACACQQAgACABa0EQTRtqIgAgAWsiAmshAyAGQQNxBEAgACADIAAoAgRBAXFyQQJyNgIEIAAgA2oiAyADKAIEQQFyNgIEIAUgAiAFKAIAQQFxckECcjYCACABIAJqIgMgAygCBEEBcjYCBCABIAIQWgwBCyABKAIAIQEgACADNgIEIAAgASACajYCAAsCQCAAKAIEIgFBA3FFDQAgAUF4cSICIARBEGpNDQAgACAEIAFBAXFyQQJyNgIEIAAgBGoiASACIARrIgRBA3I2AgQgACACaiICIAIoAgRBAXI2AgQgASAEEFoLIABBCGohAwsgAw8LIAAQVguTJgIJfwF+IwBBEGsiCCQAAkACQAJAIABB9QFPBEAgAEHM/3tLBEBBACEADAQLIABBC2oiAUF4cSEFQdCbwAAoAgAiCUUNAkEfIQYgAEH1//8HTw0BIAVBJiABQQh2ZyIAa3ZBAXEgAEEBdGtBPmohBgwBCwJAAkACQAJAAkBBzJvAACgCACIEQRAgAEELakH4A3EgAEELSRsiBUEDdiIAdiIBQQNxBEAgAUF/c0EBcSAAaiIHQQN0IgFBxJnAAGoiACABQcyZwABqKAIAIgIoAggiA0YNASADIAA2AgwgACADNgIIDAILIAVB1JvAACgCAE0NBiABRQRAQdCbwAAoAgAiAEUNByAAaEECdEG0mMAAaigCACIBKAIEQXhxIAVrIQMgASECA0ACQCABKAIQIgBFBEAgASgCFCIARQ0BCyAAKAIEQXhxIAVrIgEgAyABIANJIgEbIQMgACACIAEbIQIgACEBDAELCyACKAIYIQYCQAJAIAIgAigCDCIARgRAIAJBFEEQIAIoAhQiABtqKAIAIgENAUEAIQAMAgsgAigCCCIBIAA2AgwgACABNgIIDAELIAJBFGogAkEQaiAAGyEEA0AgBCEHIAEiAEEUaiAAQRBqIAAoAhQiARshBCAAQRRBECABG2ooAgAiAQ0ACyAHQQA2AgALIAZFDQUCQCACKAIcQQJ0QbSYwABqIgEoAgAgAkcEQCACIAYoAhBHBEAgBiAANgIUIAANAgwICyAGIAA2AhAgAA0BDAcLIAEgADYCACAARQ0FCyAAIAY2AhggAigCECIBBEAgACABNgIQIAEgADYCGAsgAigCFCIBRQ0FIAAgATYCFCABIAA2AhgMBQsCQEECIAB0IgJBACACa3IgASAAdHFoIgdBA3QiAUHEmcAAaiICIAFBzJnAAGooAgAiACgCCCIDRwRAIAMgAjYCDCACIAM2AggMAQtBzJvAACAEQX4gB3dxNgIACyAAIAVBA3I2AgQgACAFaiIGIAEgBWsiB0EBcjYCBCAAIAFqIAc2AgBB1JvAACgCACICRQ0CQdybwAAoAgAhAQJAQcybwAAoAgAiBEEBIAJBA3Z0IgNxRQRAQcybwAAgAyAEcjYCACACQXhxQcSZwABqIgMhBAwBCyACQXhxIgJBxJnAAGohBCACQcyZwABqKAIAIQMLIAQgATYCCCADIAE2AgwgASAENgIMIAEgAzYCCAwCC0HMm8AAIARBfiAHd3E2AgALIAJBCGohACACIAFBA3I2AgQgASACaiIBIAEoAgRBAXI2AgQMBQsgAEEIaiEAQdybwAAgBjYCAEHUm8AAIAc2AgAMBAtB0JvAAEHQm8AAKAIAQX4gAigCHHdxNgIACwJAAkAgA0EQTwRAIAIgBUEDcjYCBCACIAVqIgcgA0EBcjYCBCADIAdqIAM2AgBB1JvAACgCACIBRQ0BQdybwAAoAgAhAAJAQcybwAAoAgAiBEEBIAFBA3Z0IgZxRQRAQcybwAAgBCAGcjYCACABQXhxQcSZwABqIgQhAQwBCyABQXhxIgRBxJnAAGohASAEQcyZwABqKAIAIQQLIAEgADYCCCAEIAA2AgwgACABNgIMIAAgBDYCCAwBCyACIAMgBWoiAEEDcjYCBCAAIAJqIgAgACgCBEEBcjYCBAwBC0Hcm8AAIAc2AgBB1JvAACADNgIACyACQQhqIgBFDQEMAgtBACAFayEDAkACQAJAIAZBAnRBtJjAAGooAgAiAkUEQEEAIQFBACEADAELQQAhASAFQRkgBkEBdmtBACAGQR9HG3QhBEEAIQADQAJAIAIoAgRBeHEiByAFSQ0AIAcgBWsiByADTw0AIAIhASAHIgMNAEEAIQMgASEADAMLIAIoAhQiByAAIAcgAiAEQR12QQRxaigCECICRxsgACAHGyEAIARBAXQhBCACDQALCyAAIAFyRQRAQQAhAUECIAZ0IgBBACAAa3IgCXEiAEUNAyAAaEECdEG0mMAAaigCACEACyAARQ0BCwNAIAMgACgCBEF4cSICIAVrIgQgAyADIARLIgQbIAIgBUkiAhshAyABIAAgASAEGyACGyEBIAAoAhAiAgR/IAIFIAAoAhQLIgANAAsLIAFFDQAgBUHUm8AAKAIAIgBNIAMgACAFa09xDQAgASgCGCEGAkACQCABIAEoAgwiAEYEQCABQRRBECABKAIUIgAbaigCACICDQFBACEADAILIAEoAggiAiAANgIMIAAgAjYCCAwBCyABQRRqIAFBEGogABshBANAIAQhByACIgBBFGogAEEQaiAAKAIUIgIbIQQgAEEUQRAgAhtqKAIAIgINAAsgB0EANgIACwJAIAZFDQACQAJAIAEoAhxBAnRBtJjAAGoiAigCACABRwRAIAEgBigCEEcEQCAGIAA2AhQgAA0CDAQLIAYgADYCECAADQEMAwsgAiAANgIAIABFDQELIAAgBjYCGCABKAIQIgIEQCAAIAI2AhAgAiAANgIYCyABKAIUIgJFDQEgACACNgIUIAIgADYCGAwBC0HQm8AAQdCbwAAoAgBBfiABKAIcd3E2AgALAkAgA0EQTwRAIAEgBUEDcjYCBCABIAVqIgAgA0EBcjYCBCAAIANqIAM2AgAgA0GAAk8EQCAAIAMQWwwCCwJAQcybwAAoAgAiAkEBIANBA3Z0IgRxRQRAQcybwAAgAiAEcjYCACADQfgBcUHEmcAAaiIDIQIMAQsgA0H4AXEiBEHEmcAAaiECIARBzJnAAGooAgAhAwsgAiAANgIIIAMgADYCDCAAIAI2AgwgACADNgIIDAELIAEgAyAFaiIAQQNyNgIEIAAgAWoiACAAKAIEQQFyNgIECyABQQhqIgANAQsCQAJAAkACQAJAAkACQCAFQdSbwAAoAgAiAUsEQCAFQdibwAAoAgAiAE8EQCAIQQRqIQACfwJAIAVBr4AEakGAgHxxIgFFDQBB+JvAAC0AAEH4m8AAQQE6AABBgJzAACECIAFBgOQDSw0ADQBBgOQDDAELQQAhAkEAIAFBEHYgAUH//wNxQQBHaiIBQAAiBEF/Rg0AGiABQRB0IgFBEGsgASAEQRB0IgJBACABa0YbCyEBIABBADYCCCAAIAE2AgQgACACNgIAIAgoAgQiAUUEQEEAIQAMCgsgCCgCDCEHQeSbwAAgCCgCCCIEQeSbwAAoAgBqIgA2AgBB6JvAACAAQeibwAAoAgAiAiAAIAJLGzYCAAJAAkBB4JvAACgCACICBEBBtJnAACEAA0AgASAAKAIAIgMgACgCBCIGakYNAiAAKAIIIgANAAsMAgtB8JvAACgCACIARQ0HIAAgAUsNBwwJCyABIAJNDQAgAiADSQ0AIAAoAgwiA0EBcQ0AIANBAXYgB0YNAwtB8JvAAEHwm8AAKAIAIgAgASAAIAFJGzYCACABIARqIQNBtJnAACEAAkACQAJAA0AgAyAAKAIAIgZHBEAgACgCCCIADQEMAgsLIAAoAgwiA0EBcQ0AIANBAXYgB0YNAQtBtJnAACEAA0AgAiAAKAIAIgNPBEAgAiADIAAoAgRqIgZJDQMLIAAoAgghAAwACwALIAAgATYCACAAIAAoAgQgBGo2AgQgAUEPakF4cUEIayIEIAVBA3I2AgQgBkEPakF4cUEIayIDIAQgBWoiAGshBSADQeCbwAAoAgBGDQQgA0Hcm8AAKAIARg0FIAMoAgQiAkEDcUEBRgRAIAMgAkF4cSIBEFkgASAFaiEFIAEgA2oiAygCBCECCyADIAJBfnE2AgQgACAFQQFyNgIEIAAgBWogBTYCACAFQYACTwRAIAAgBRBbDAgLAkBBzJvAACgCACIBQQEgBUEDdnQiAnFFBEBBzJvAACABIAJyNgIAIAVB+AFxQcSZwABqIgUhAwwBCyAFQfgBcSIBQcSZwABqIQMgAUHMmcAAaigCACEFCyADIAA2AgggBSAANgIMIAAgAzYCDCAAIAU2AggMBwtB4JvAACABQQ9qQXhxIgBBCGsiAzYCAEHYm8AAIARBKGsiCSABIABrakEIaiIANgIAIAMgAEEBcjYCBCABIAlqQSg2AgRB7JvAAEGAgIABNgIAIAIgBkEga0F4cUEIayIAIAAgAkEQakkbIgNBGzYCBEG0mcAAKQIAIQogA0EQakG8mcAAKQIANwIAIANBCGoiACAKNwIAQcCZwAAgBzYCAEG4mcAAIAQ2AgBBtJnAACABNgIAQbyZwAAgADYCACADQRxqIQADQCAAQQc2AgAgAEEEaiIAIAZJDQALIAIgA0YNCCADIAMoAgRBfnE2AgQgAiADIAJrIgBBAXI2AgQgAyAANgIAIABBgAJPBEAgAiAAEFsMCQsCQEHMm8AAKAIAIgFBASAAQQN2dCIEcUUEQEHMm8AAIAEgBHI2AgAgAEH4AXFBxJnAAGoiACEBDAELIABB+AFxIgBBxJnAAGohASAAQcyZwABqKAIAIQALIAEgAjYCCCAAIAI2AgwgAiABNgIMIAIgADYCCAwIC0HYm8AAIAAgBWsiATYCAEHgm8AAQeCbwAAoAgAiACAFaiICNgIAIAIgAUEBcjYCBCAAIAVBA3I2AgQgAEEIaiEADAgLQdybwAAoAgAhAAJAIAEgBWsiAkEPTQRAQdybwABBADYCAEHUm8AAQQA2AgAgACABQQNyNgIEIAAgAWoiASABKAIEQQFyNgIEDAELQdSbwAAgAjYCAEHcm8AAIAAgBWoiBDYCACAEIAJBAXI2AgQgACABaiACNgIAIAAgBUEDcjYCBAsgAEEIaiEADAcLIAAgBCAGajYCBEHgm8AAQeCbwAAoAgAiAEEPakF4cSIBQQhrIgI2AgBB2JvAAEHYm8AAKAIAIARqIgQgACABa2pBCGoiATYCACACIAFBAXI2AgQgACAEakEoNgIEQeybwABBgICAATYCAAwFC0Hgm8AAIAA2AgBB2JvAAEHYm8AAKAIAIAVqIgE2AgAgACABQQFyNgIEDAILQdybwAAgADYCAEHUm8AAQdSbwAAoAgAgBWoiATYCACAAIAFBAXI2AgQgACABaiABNgIADAELQfCbwAAgATYCAAwBCyAEQQhqIQAMAgtB9JvAAEH/HzYCAEHAmcAAIAc2AgBBuJnAACAENgIAQbSZwAAgATYCAEHQmcAAQcSZwAA2AgBB2JnAAEHMmcAANgIAQcyZwABBxJnAADYCAEHgmcAAQdSZwAA2AgBB1JnAAEHMmcAANgIAQeiZwABB3JnAADYCAEHcmcAAQdSZwAA2AgBB8JnAAEHkmcAANgIAQeSZwABB3JnAADYCAEH4mcAAQeyZwAA2AgBB7JnAAEHkmcAANgIAQYCawABB9JnAADYCAEH0mcAAQeyZwAA2AgBBiJrAAEH8mcAANgIAQfyZwABB9JnAADYCAEGQmsAAQYSawAA2AgBBhJrAAEH8mcAANgIAQYyawABBhJrAADYCAEGYmsAAQYyawAA2AgBBlJrAAEGMmsAANgIAQaCawABBlJrAADYCAEGcmsAAQZSawAA2AgBBqJrAAEGcmsAANgIAQaSawABBnJrAADYCAEGwmsAAQaSawAA2AgBBrJrAAEGkmsAANgIAQbiawABBrJrAADYCAEG0msAAQayawAA2AgBBwJrAAEG0msAANgIAQbyawABBtJrAADYCAEHImsAAQbyawAA2AgBBxJrAAEG8msAANgIAQdCawABBxJrAADYCAEHYmsAAQcyawAA2AgBBzJrAAEHEmsAANgIAQeCawABB1JrAADYCAEHUmsAAQcyawAA2AgBB6JrAAEHcmsAANgIAQdyawABB1JrAADYCAEHwmsAAQeSawAA2AgBB5JrAAEHcmsAANgIAQfiawABB7JrAADYCAEHsmsAAQeSawAA2AgBBgJvAAEH0msAANgIAQfSawABB7JrAADYCAEGIm8AAQfyawAA2AgBB/JrAAEH0msAANgIAQZCbwABBhJvAADYCAEGEm8AAQfyawAA2AgBBmJvAAEGMm8AANgIAQYybwABBhJvAADYCAEGgm8AAQZSbwAA2AgBBlJvAAEGMm8AANgIAQaibwABBnJvAADYCAEGcm8AAQZSbwAA2AgBBsJvAAEGkm8AANgIAQaSbwABBnJvAADYCAEG4m8AAQaybwAA2AgBBrJvAAEGkm8AANgIAQcCbwABBtJvAADYCAEG0m8AAQaybwAA2AgBByJvAAEG8m8AANgIAQbybwABBtJvAADYCAEHgm8AAIAFBD2pBeHEiAEEIayICNgIAQcSbwABBvJvAADYCAEHYm8AAIARBKGsiBCABIABrakEIaiIANgIAIAIgAEEBcjYCBCABIARqQSg2AgRB7JvAAEGAgIABNgIAC0EAIQBB2JvAACgCACIBIAVNDQBB2JvAACABIAVrIgE2AgBB4JvAAEHgm8AAKAIAIgAgBWoiAjYCACACIAFBAXI2AgQgACAFQQNyNgIEIABBCGohAAsgCEEQaiQAIAALPQECfwJAIABBBGsoAgAiAkF4cSIDQQRBCCACQQNxIgIbIAFqSQ0AIAJBACADIAFBJ2pLGw0AIAAQWA8LAAuiBgEEfyAAQQhrIgEgAEEEaygCACIDQXhxIgBqIQICQAJAIANBAXENACADQQJxRQ0BIAEoAgAiAyAAaiEAIAEgA2siAUHcm8AAKAIARgRAIAIoAgRBA3FBA0cNAUHUm8AAIAA2AgAgAiACKAIEQX5xNgIEIAEgAEEBcjYCBCACIAA2AgAPCyABIAMQWQsCQAJAQfSbwAACfwJAAkACQAJAIAIoAgQiA0ECcUUEQCACQeCbwAAoAgBGDQIgAkHcm8AAKAIARg0DIAIgA0F4cSICEFkgASAAIAJqIgBBAXI2AgQgACABaiAANgIAIAFB3JvAACgCAEcNAUHUm8AAIAA2AgAPCyACIANBfnE2AgQgASAAQQFyNgIEIAAgAWogADYCAAsgAEGAAkkNBCABIAAQW0H0m8AAQfSbwAAoAgBBAWsiADYCACAADQZBvJnAACgCACIADQJB/x8MAwtB4JvAACABNgIAQdibwABB2JvAACgCACAAaiIANgIAIAEgAEEBcjYCBEHcm8AAKAIAIAFGBEBB1JvAAEEANgIAQdybwABBADYCAAsgAEHsm8AAKAIAIgJNDQVB4JvAACgCACIARQ0FQdibwAAoAgAiA0EpSQ0EQbSZwAAhAQNAIAAgASgCACIETwRAIAAgBCABKAIEakkNBgsgASgCCCEBDAALAAtB3JvAACABNgIAQdSbwABB1JvAACgCACAAaiIANgIAIAEgAEEBcjYCBCAAIAFqIAA2AgAPC0EAIQEDQCABQQFqIQEgACgCCCIADQALQf8fIAEgAUH/H00bCzYCAA8LAkBBzJvAACgCACICQQEgAEEDdnQiA3FFBEBBzJvAACACIANyNgIAIABB+AFxQcSZwABqIgAhAgwBCyAAQfgBcSIAQcSZwABqIQIgAEHMmcAAaigCACEACyACIAE2AgggACABNgIMIAEgAjYCDCABIAA2AggPC0H0m8AAQbyZwAAoAgAiAAR/QQAhAQNAIAFBAWohASAAKAIIIgANAAtB/x8gASABQf8fTRsFQf8fCzYCACACIANPDQBB7JvAAEF/NgIACwuCAwEEfyAAKAIMIQICQAJAAkAgAUGAAk8EQCAAKAIYIQMCQAJAIAAgAkYEQCAAQRRBECAAKAIUIgIbaigCACIBDQFBACECDAILIAAoAggiASACNgIMIAIgATYCCAwBCyAAQRRqIABBEGogAhshBANAIAQhBSABIgJBFGogAkEQaiACKAIUIgEbIQQgAkEUQRAgARtqKAIAIgENAAsgBUEANgIACyADRQ0CAkAgACgCHEECdEG0mMAAaiIBKAIAIABHBEAgAygCECAARg0BIAMgAjYCFCACDQMMBAsgASACNgIAIAJFDQQMAgsgAyACNgIQIAINAQwCCyAAKAIIIgAgAkcEQCAAIAI2AgwgAiAANgIIDwtBzJvAAEHMm8AAKAIAQX4gAUEDdndxNgIADwsgAiADNgIYIAAoAhAiAQRAIAIgATYCECABIAI2AhgLIAAoAhQiAEUNACACIAA2AhQgACACNgIYDwsPC0HQm8AAQdCbwAAoAgBBfiAAKAIcd3E2AgALjgQBAn8gACABaiECAkACQAJAIAAoAgQiA0EBcQ0AIANBAnFFDQEgACgCACIDIAFqIQEgACADayIAQdybwAAoAgBGBEAgAigCBEEDcUEDRw0BQdSbwAAgATYCACACIAIoAgRBfnE2AgQgACABQQFyNgIEIAIgATYCAA8LIAAgAxBZCwJAAkAgAigCBCIDQQJxRQRAIAJB4JvAACgCAEYNAiACQdybwAAoAgBGDQQgAiADQXhxIgIQWSAAIAEgAmoiAUEBcjYCBCAAIAFqIAE2AgAgAEHcm8AAKAIARw0BQdSbwAAgATYCAA8LIAIgA0F+cTYCBCAAIAFBAXI2AgQgACABaiABNgIACyABQYACTwRAIAAgARBbDwsCQEHMm8AAKAIAIgJBASABQQN2dCIDcUUEQEHMm8AAIAIgA3I2AgAgAUH4AXFBxJnAAGoiASECDAELIAFB+AFxIgFBxJnAAGohAiABQcyZwABqKAIAIQELIAIgADYCCCABIAA2AgwgACACNgIMIAAgATYCCA8LQeCbwAAgADYCAEHYm8AAQdibwAAoAgAgAWoiATYCACAAIAFBAXI2AgQgAEHcm8AAKAIARw0AQdSbwABBADYCAEHcm8AAQQA2AgALDwtB3JvAACAANgIAQdSbwABB1JvAACgCACABaiIBNgIAIAAgAUEBcjYCBCAAIAFqIAE2AgALwwIBBH8gAEIANwIQIAACf0EAIAFBCHYiA0UNABpBHyABQYCAgAhPDQAaIAFBJiADZyIDa3ZBAXEgA0EBdHJBPnMLIgI2AhwgAkECdEG0mMAAaiEEQQEgAnQiA0HQm8AAKAIAcUUEQCAEIAA2AgAgACAENgIYIAAgADYCDCAAIAA2AghB0JvAAEHQm8AAKAIAIANyNgIADwsCQAJAIAEgBCgCACIDKAIEQXhxRgRAIAMhAgwBCyABQRkgAkEBdmtBACACQR9HG3QhBQNAIAMgBUEddkEEcWoiBCgCECICRQ0CIAVBAXQhBSACIQMgAigCBEF4cSABRw0ACwsgAigCCCIBIAA2AgwgAiAANgIIIABBADYCGCAAIAI2AgwgACABNgIIDwsgBEEQaiAANgIAIAAgAzYCGCAAIAA2AgwgACAANgIICwvuFQcAQaGAwAALXgEAAQEBAQEAAAEBAAEBAAEBAQEBAQEBAQEAAAAAAAAAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQABAAEAQYmCwAALAQEAQaCCwAAL4AEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQBBiYTAAAsBAQBBoITAAAvgAQEBAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAEGhhsAAC14BAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAQABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQABAAEAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAAABAEGAiMAAC7QQVW5leHBlY3RlZCBlbmQgb2YgZGF0YVVuZXhwZWN0ZWQgZGF0YVJlcXVlc3QgbGluZSB0b28gbG9uZ0ludmFsaWQgbWV0aG9kIGNoYXJhY3RlckludmFsaWQgVVJMIGNoYXJhY3RlclBSSSBpcyBvbmx5IHZhbGlkIHdpdGggSFRUUC8yLjBVbnN1cHBvcnRlZCBIVFRQIHZlcnNpb25JbnZhbGlkIHByb3RvY29sSW52YWxpZCBwcm90b2NvbCBuYW1lRXhwZWN0ZWQgLyBhZnRlciB0aGUgcHJvdG9jb2wgbmFtZUV4cGVjdGVkIHNwYWNlIGFmdGVyIFVSTEV4cGVjdGVkIHNwYWNlIGFmdGVyIG1ldGhvZFJlcXVlc3QgbGluZSB0b28gc2hvcnRFeHBlY3RlZCBDUkxGU3RhdHVzIGxpbmUgdG9vIGxvbmdJbnZhbGlkIEhUVFAgcmVzcG9uc2Ugc3RhdHVzSW52YWxpZCBzdGF0dXMgcmVhc29uIGNoYXJhY3RlckV4cGVjdGVkIGEgc3BhY2UgYWZ0ZXIgSFRUUCByZXNwb25zZSBzdGF0dXNFeHBlY3RlZCBzcGFjZSBhZnRlciBwcm90b2NvbFN0YXR1cyBsaW5lIHRvbyBzaG9ydE1hbGZvcm1lZCBIVFRQLzIuMCBwcmVmYWNlSGVhZGVyIGxpbmUgdG9vIGxvbmdVbmV4cGVjdGVkIENvbnRlbnQtTGVuZ3RoIGhlYWRlciBmb3IgYSByZXNwb25zZSB3aXRob3V0IGJvZHlFeHBlY3RlZCBDb250ZW50LUxlbmd0aCBoZWFkZXIgdmFsdWVJbnZhbGlkIENvbnRlbnQtTGVuZ3RoIGhlYWRlckludmFsaWQgZHVwbGljYXRlIENvbnRlbnQtTGVuZ3RoIGhlYWRlclVuZXhwZWN0ZWQgQ29udGVudC1MZW5ndGggaGVhZGVyIHdoZW4gVHJhbnNmZXItRW5jb2RpbmcgaGVhZGVyIGlzIHByZXNlbnRVbmV4cGVjdGVkIFRyYW5zZmVyLUVuY29kaW5nIGhlYWRlciBmb3IgYSByZXNwb25zZSB3aXRob3V0IGJvZHlFeHBlY3RlZCBUcmFuc2Zlci1FbmNvZGluZyBoZWFkZXIgdmFsdWVUaGUgdmFsdWUgImNodW5rZWQiIGluIHRoZSBUcmFuc2Zlci1FbmNvZGluZyBoZWFkZXIgbXVzdCBiZSB0aGUgbGFzdCBwcm92aWRlZCBhbmQgY2FuIGJlIHByb3ZpZGVkIG9ubHkgb25jZVRoZSB2YWx1ZSAiY2h1bmtlZCIgaW4gdGhlIFRyYW5zZmVyLUVuY29kaW5nIGhlYWRlciBtdXN0IGJlIHRoZSBsYXN0IHByb3ZpZGVkVW5leHBlY3RlZCBUcmFuc2Zlci1FbmNvZGluZyBoZWFkZXIgd2hlbiBDb250ZW50LUxlbmd0aCBoZWFkZXIgaXMgcHJlc2VudEV4cGVjdGVkIENvbm5lY3Rpb24gaGVhZGVyIHZhbHVlSW52YWxpZCBDb25uZWN0aW9uIGhlYWRlciB2YWx1ZUV4cGVjdGVkIFRyYWlsZXIgaGVhZGVyIHZhbHVlRXhwZWN0ZWQgVXBncmFkZSBoZWFkZXIgdmFsdWVJbnZhbGlkIFVwZ3JhZGUgaGVhZGVyIHZhbHVlSW52YWxpZCBoZWFkZXIgZmllbGQgbmFtZSBjaGFyYWN0ZXJJbnZhbGlkIGhlYWRlciBmaWVsZCB2YWx1ZSBjaGFyYWN0ZXJNaXNzaW5nIENvbm5lY3Rpb24gaGVhZGVyIHNldCB0byAidXBncmFkZSIgd2hlbiB1c2luZyB0aGUgVXBncmFkZSBoZWFkZXJUcmFpbGVycyBhcmUgbm90IGFsbG93ZWQgd2hlbiBub3QgdXNpbmcgY2h1bmtlZCB0cmFuc2ZlciBlbmNvZGluZ1VuZXhwZWN0ZWQgY29udGVudCBmb3IgdGhlIHJlcXVlc3QgKEdFVCBvciBIRUFEKVRyYW5zZmVyLUVuY29kaW5nIGxhc3QgaGVhZGVyIHZhbHVlIG11c3QgYmUgImNodW5rZWQiIGlmIHRoZSBoZWFkZXIgaXMgcHJlc2VudENodW5rIGhlYWRlciB0b28gbG9uZ0ludmFsaWQgY2h1bmsgbGVuZ3RoIGNoYXJhY3RlckludmFsaWQgY2h1bmsgbGVuZ3RoIHNpemVFeHBlY3RlZCBjaHVuayBleHRlbnNpb24gbmFtZUludmFsaWQgY2h1bmsgZXh0ZW5zaW9uIG5hbWUgY2hhcmFjdGVyRXhwZWN0ZWQgY2xvc2luZyBxdW90ZSBmb3IgY2h1bmsgZXh0ZW5zaW9uIHZhbHVlSW52YWxpZCBjaHVuayBleHRlbnNpb24gcXVvdGVkIHZhbHVlIGNoYXJhY3RlckV4cGVjdGVkIGNodW5rIGV4dGVuc2lvbiB2YWx1ZUludmFsaWQgY2h1bmsgZXh0ZW5zaW9uIHZhbHVlIGNoYXJhY3RlckludmFsaWQgY2h1bmsgZXh0ZW5zaW9uIGNoYXJhY3RlciBhZnRlciB2YWx1ZUV4cGVjdGVkIENSTEYgYWZ0ZXIgY2h1bmsgZGF0YVRyYWlsZXIgbGluZSB0b28gbG9uZ0ludmFsaWQgdHJhaWxlciBmaWVsZCBuYW1lIGNoYXJhY3RlckludmFsaWQgdHJhaWxlciBmaWVsZCB2YWx1ZSBjaGFyYWN0ZXJJbnZhbGlkIHN0YXRl',
+    'base64'
+  )
+)
+
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
+
+function log (logger, raw) {
+  const len = Number(BigInt.asUintN(32, raw))
+  const ptr = Number(raw >> 32n)
+
+  logger(textDecoder.decode(new Uint8Array(this.memory.buffer, ptr, len)))
+}
+
+function alloc (len) {
+  return this.alloc(len) >>> 0
+}
+
+function dealloc (ptr, len) {
+  return this.dealloc(ptr, len)
+}
+
+function create () {
+  return this.create() >>> 0
+}
+
+function destroy (parser) {
+  this.destroy(parser)
+}
+
+function parse (parser, data, limit) {
+  return this.parse(parser, data, limit) >>> 0
+}
+
+function fail (parser, code, description) {
+  const len = description.length
+  const ptr = this.alloc(len)
+  const buffer = new Uint8Array(this.memory.buffer, ptr, len)
+  textEncoder.encodeInto(description, buffer)
+
+  this.fail(parser, code, ptr, len)
+  this.dealloc(ptr, len)
+}
+
+function hasDebug () {
+  return this.milo_has_debug() !== 0
+}
+
+const Errors = Object.freeze({
+  NONE: 0,
+  USER: 1,
+  CALLBACK_ERROR: 2,
+  UNEXPECTED_STATE: 3,
+  UNEXPECTED_DATA: 4,
+  UNEXPECTED_EOF: 5,
+  UNEXPECTED_CHARACTER: 6,
+  UNEXPECTED_CONTENT_LENGTH: 7,
+  UNEXPECTED_TRANSFER_ENCODING: 8,
+  UNEXPECTED_CONTENT: 9,
+  UNEXPECTED_TRAILERS: 10,
+  INVALID_VERSION: 11,
+  INVALID_STATUS: 12,
+  INVALID_CONTENT_LENGTH: 13,
+  INVALID_TRANSFER_ENCODING: 14,
+  INVALID_CHUNK_SIZE: 15,
+  MISSING_CONNECTION_UPGRADE: 16,
+  UNSUPPORTED_HTTP_VERSION: 17,
+  0: 'NONE',
+  1: 'USER',
+  2: 'CALLBACK_ERROR',
+  3: 'UNEXPECTED_STATE',
+  4: 'UNEXPECTED_DATA',
+  5: 'UNEXPECTED_EOF',
+  6: 'UNEXPECTED_CHARACTER',
+  7: 'UNEXPECTED_CONTENT_LENGTH',
+  8: 'UNEXPECTED_TRANSFER_ENCODING',
+  9: 'UNEXPECTED_CONTENT',
+  10: 'UNEXPECTED_TRAILERS',
+  11: 'INVALID_VERSION',
+  12: 'INVALID_STATUS',
+  13: 'INVALID_CONTENT_LENGTH',
+  14: 'INVALID_TRANSFER_ENCODING',
+  15: 'INVALID_CHUNK_SIZE',
+  16: 'MISSING_CONNECTION_UPGRADE',
+  17: 'UNSUPPORTED_HTTP_VERSION'
+})
+
+const Methods = Object.freeze({
+  OTHER: 0,
+  GET: 1,
+  HEAD: 2,
+  POST: 3,
+  PUT: 4,
+  DELETE: 5,
+  CONNECT: 6,
+  OPTIONS: 7,
+  TRACE: 8,
+  PATCH: 9,
+  PRI: 10,
+  0: 'OTHER',
+  1: 'GET',
+  2: 'HEAD',
+  3: 'POST',
+  4: 'PUT',
+  5: 'DELETE',
+  6: 'CONNECT',
+  7: 'OPTIONS',
+  8: 'TRACE',
+  9: 'PATCH',
+  10: 'PRI'
+})
+
+const Callbacks = Object.freeze({
+  ON_ERROR: 0,
+  ON_FINISH: 1,
+  ON_MESSAGE_START: 2,
+  ON_MESSAGE_COMPLETE: 3,
+  ON_REQUEST: 4,
+  ON_RESPONSE: 5,
+  ON_RESET: 6,
+  ON_METHOD: 7,
+  ON_URL: 8,
+  ON_PROTOCOL: 9,
+  ON_VERSION: 10,
+  ON_STATUS: 11,
+  ON_REASON: 12,
+  ON_HEADER_NAME: 13,
+  ON_HEADER_VALUE: 14,
+  ON_HEADERS: 15,
+  ON_CONNECT: 16,
+  ON_UPGRADE: 17,
+  ON_CHUNK_LENGTH: 18,
+  ON_CHUNK_EXTENSION_NAME: 19,
+  ON_CHUNK_EXTENSION_VALUE: 20,
+  ON_CHUNK: 21,
+  ON_BODY: 22,
+  ON_DATA: 23,
+  ON_TRAILER_NAME: 24,
+  ON_TRAILER_VALUE: 25,
+  ON_TRAILERS: 26,
+  ON_STATE_CHANGE: 27,
+  0: 'ON_ERROR',
+  1: 'ON_FINISH',
+  2: 'ON_MESSAGE_START',
+  3: 'ON_MESSAGE_COMPLETE',
+  4: 'ON_REQUEST',
+  5: 'ON_RESPONSE',
+  6: 'ON_RESET',
+  7: 'ON_METHOD',
+  8: 'ON_URL',
+  9: 'ON_PROTOCOL',
+  10: 'ON_VERSION',
+  11: 'ON_STATUS',
+  12: 'ON_REASON',
+  13: 'ON_HEADER_NAME',
+  14: 'ON_HEADER_VALUE',
+  15: 'ON_HEADERS',
+  16: 'ON_CONNECT',
+  17: 'ON_UPGRADE',
+  18: 'ON_CHUNK_LENGTH',
+  19: 'ON_CHUNK_EXTENSION_NAME',
+  20: 'ON_CHUNK_EXTENSION_VALUE',
+  21: 'ON_CHUNK',
+  22: 'ON_BODY',
+  23: 'ON_DATA',
+  24: 'ON_TRAILER_NAME',
+  25: 'ON_TRAILER_VALUE',
+  26: 'ON_TRAILERS',
+  27: 'ON_STATE_CHANGE'
+})
+
+const CallbackActives = Object.freeze({
+  NONE: 0n,
+  ON_ERROR: 1n,
+  ON_FINISH: 2n,
+  ON_MESSAGE_START: 4n,
+  ON_MESSAGE_COMPLETE: 8n,
+  ON_REQUEST: 16n,
+  ON_RESPONSE: 32n,
+  ON_RESET: 64n,
+  ON_METHOD: 128n,
+  ON_URL: 256n,
+  ON_PROTOCOL: 512n,
+  ON_VERSION: 1024n,
+  ON_STATUS: 2048n,
+  ON_REASON: 4096n,
+  ON_HEADER_NAME: 8192n,
+  ON_HEADER_VALUE: 16384n,
+  ON_HEADERS: 32768n,
+  ON_CONNECT: 65536n,
+  ON_UPGRADE: 131072n,
+  ON_CHUNK_LENGTH: 262144n,
+  ON_CHUNK_EXTENSION_NAME: 524288n,
+  ON_CHUNK_EXTENSION_VALUE: 1048576n,
+  ON_CHUNK: 2097152n,
+  ON_BODY: 4194304n,
+  ON_DATA: 8388608n,
+  ON_TRAILER_NAME: 16777216n,
+  ON_TRAILER_VALUE: 33554432n,
+  ON_TRAILERS: 67108864n,
+  ON_STATE_CHANGE: 134217728n,
+  ALL: 268435455n,
+  0n: 'NONE',
+  1n: 'ON_ERROR',
+  2n: 'ON_FINISH',
+  4n: 'ON_MESSAGE_START',
+  8n: 'ON_MESSAGE_COMPLETE',
+  16n: 'ON_REQUEST',
+  32n: 'ON_RESPONSE',
+  64n: 'ON_RESET',
+  128n: 'ON_METHOD',
+  256n: 'ON_URL',
+  512n: 'ON_PROTOCOL',
+  1024n: 'ON_VERSION',
+  2048n: 'ON_STATUS',
+  4096n: 'ON_REASON',
+  8192n: 'ON_HEADER_NAME',
+  16384n: 'ON_HEADER_VALUE',
+  32768n: 'ON_HEADERS',
+  65536n: 'ON_CONNECT',
+  131072n: 'ON_UPGRADE',
+  262144n: 'ON_CHUNK_LENGTH',
+  524288n: 'ON_CHUNK_EXTENSION_NAME',
+  1048576n: 'ON_CHUNK_EXTENSION_VALUE',
+  2097152n: 'ON_CHUNK',
+  4194304n: 'ON_BODY',
+  8388608n: 'ON_DATA',
+  16777216n: 'ON_TRAILER_NAME',
+  33554432n: 'ON_TRAILER_VALUE',
+  67108864n: 'ON_TRAILERS',
+  134217728n: 'ON_STATE_CHANGE',
+  268435455n: 'ALL'
+})
+
+const Events = Object.freeze({
+  END: 0,
+  ERROR: 1,
+  FINISH: 2,
+  MESSAGE_START: 3,
+  MESSAGE_COMPLETE: 4,
+  REQUEST: 5,
+  RESPONSE: 6,
+  RESET: 7,
+  METHOD: 8,
+  URL: 9,
+  PROTOCOL: 10,
+  VERSION: 11,
+  STATUS: 12,
+  REASON: 13,
+  HEADER_NAME: 14,
+  HEADER_VALUE: 15,
+  HEADERS: 16,
+  CONNECT: 17,
+  UPGRADE: 18,
+  CHUNK_LENGTH: 19,
+  CHUNK_EXTENSION_NAME: 20,
+  CHUNK_EXTENSION_VALUE: 21,
+  CHUNK: 22,
+  BODY: 23,
+  DATA: 24,
+  TRAILER_NAME: 25,
+  TRAILER_VALUE: 26,
+  TRAILERS: 27,
+  STATE_CHANGE: 28,
+  0: 'END',
+  1: 'ERROR',
+  2: 'FINISH',
+  3: 'MESSAGE_START',
+  4: 'MESSAGE_COMPLETE',
+  5: 'REQUEST',
+  6: 'RESPONSE',
+  7: 'RESET',
+  8: 'METHOD',
+  9: 'URL',
+  10: 'PROTOCOL',
+  11: 'VERSION',
+  12: 'STATUS',
+  13: 'REASON',
+  14: 'HEADER_NAME',
+  15: 'HEADER_VALUE',
+  16: 'HEADERS',
+  17: 'CONNECT',
+  18: 'UPGRADE',
+  19: 'CHUNK_LENGTH',
+  20: 'CHUNK_EXTENSION_NAME',
+  21: 'CHUNK_EXTENSION_VALUE',
+  22: 'CHUNK',
+  23: 'BODY',
+  24: 'DATA',
+  25: 'TRAILER_NAME',
+  26: 'TRAILER_VALUE',
+  27: 'TRAILERS',
+  28: 'STATE_CHANGE'
+})
+
+const EventActives = Object.freeze({
+  NONE: 0n,
+  ON_ERROR: 1n,
+  ON_FINISH: 2n,
+  ON_MESSAGE_START: 4n,
+  ON_MESSAGE_COMPLETE: 8n,
+  ON_REQUEST: 16n,
+  ON_RESPONSE: 32n,
+  ON_RESET: 64n,
+  ON_METHOD: 128n,
+  ON_URL: 256n,
+  ON_PROTOCOL: 512n,
+  ON_VERSION: 1024n,
+  ON_STATUS: 2048n,
+  ON_REASON: 4096n,
+  ON_HEADER_NAME: 8192n,
+  ON_HEADER_VALUE: 16384n,
+  ON_HEADERS: 32768n,
+  ON_CONNECT: 65536n,
+  ON_UPGRADE: 131072n,
+  ON_CHUNK_LENGTH: 262144n,
+  ON_CHUNK_EXTENSION_NAME: 524288n,
+  ON_CHUNK_EXTENSION_VALUE: 1048576n,
+  ON_CHUNK: 2097152n,
+  ON_BODY: 4194304n,
+  ON_DATA: 8388608n,
+  ON_TRAILER_NAME: 16777216n,
+  ON_TRAILER_VALUE: 33554432n,
+  ON_TRAILERS: 67108864n,
+  ON_STATE_CHANGE: 134217728n,
+  ALL: 268435455n,
+  0n: 'NONE',
+  1n: 'ON_ERROR',
+  2n: 'ON_FINISH',
+  4n: 'ON_MESSAGE_START',
+  8n: 'ON_MESSAGE_COMPLETE',
+  16n: 'ON_REQUEST',
+  32n: 'ON_RESPONSE',
+  64n: 'ON_RESET',
+  128n: 'ON_METHOD',
+  256n: 'ON_URL',
+  512n: 'ON_PROTOCOL',
+  1024n: 'ON_VERSION',
+  2048n: 'ON_STATUS',
+  4096n: 'ON_REASON',
+  8192n: 'ON_HEADER_NAME',
+  16384n: 'ON_HEADER_VALUE',
+  32768n: 'ON_HEADERS',
+  65536n: 'ON_CONNECT',
+  131072n: 'ON_UPGRADE',
+  262144n: 'ON_CHUNK_LENGTH',
+  524288n: 'ON_CHUNK_EXTENSION_NAME',
+  1048576n: 'ON_CHUNK_EXTENSION_VALUE',
+  2097152n: 'ON_CHUNK',
+  4194304n: 'ON_BODY',
+  8388608n: 'ON_DATA',
+  16777216n: 'ON_TRAILER_NAME',
+  33554432n: 'ON_TRAILER_VALUE',
+  67108864n: 'ON_TRAILERS',
+  134217728n: 'ON_STATE_CHANGE',
+  268435455n: 'ALL'
+})
+
+const States = Object.freeze({
+  START: 0,
+  FINISH: 1,
+  ERROR: 2,
+  REQUEST_LINE: 3,
+  STATUS_LINE: 4,
+  HTTP2_PREFACE: 5,
+  HEADER: 6,
+  BODY_DECISION: 7,
+  BODY_VIA_CONTENT_LENGTH: 8,
+  BODY_WITH_NO_LENGTH: 9,
+  CHUNK_HEADER: 10,
+  CHUNK_EXTENSIONS: 11,
+  CHUNK_DATA: 12,
+  TRAILER: 13,
+  TUNNEL: 14,
+  0: 'START',
+  1: 'FINISH',
+  2: 'ERROR',
+  3: 'REQUEST_LINE',
+  4: 'STATUS_LINE',
+  5: 'HTTP2_PREFACE',
+  6: 'HEADER',
+  7: 'BODY_DECISION',
+  8: 'BODY_VIA_CONTENT_LENGTH',
+  9: 'BODY_WITH_NO_LENGTH',
+  10: 'CHUNK_HEADER',
+  11: 'CHUNK_EXTENSIONS',
+  12: 'CHUNK_DATA',
+  13: 'TRAILER',
+  14: 'TUNNEL'
+})
+
+const ParserFields = Object.freeze({
+  MAX_START_LINE_LENGTH: 0,
+  MAX_HEADER_LENGTH: 4,
+  MAX_BODY_PAYLOAD: 8,
+  AUTODETECT: 16,
+  IS_REQUEST: 17,
+  SUSPEND_AFTER_HEADERS: 18,
+  MANAGE_UNCONSUMED: 19,
+  CONTINUE_WITHOUT_DATA: 20,
+  IS_CONNECT: 21,
+  SKIP_BODY: 22,
+  DEBUG: 23,
+  PARSED: 24,
+  POSITION: 32,
+  STATE: 36,
+  PAUSED: 37,
+  ERROR_CODE: 38,
+  CONTENT_LENGTH: 40,
+  CHUNK_SIZE: 48,
+  REMAINING_CONTENT_LENGTH: 56,
+  REMAINING_CHUNK_SIZE: 64,
+  STATUS: 72,
+  METHOD: 76,
+  HAS_CONTENT_LENGTH: 77,
+  HAS_TRANSFER_ENCODING: 78,
+  HAS_CHUNKED_TRANSFER_ENCODING: 79,
+  HAS_CONNECTION_CLOSE: 80,
+  HAS_CONNECTION_UPGRADE: 81,
+  HAS_UPGRADE: 82,
+  HAS_TRAILERS: 83,
+  ACTIVE_CALLBACKS: 88,
+  ACTIVE_EVENTS: 96,
+  PTR: 104,
+  ERROR_DESCRIPTION: 108,
+  UNCONSUMED: 364,
+  UNCONSUMED_LEN: 368,
+  ERROR_DESCRIPTION_LEN: 372,
+  EVENTS: 376,
+  0: 'MAX_START_LINE_LENGTH',
+  4: 'MAX_HEADER_LENGTH',
+  8: 'MAX_BODY_PAYLOAD',
+  16: 'AUTODETECT',
+  17: 'IS_REQUEST',
+  18: 'SUSPEND_AFTER_HEADERS',
+  19: 'MANAGE_UNCONSUMED',
+  20: 'CONTINUE_WITHOUT_DATA',
+  21: 'IS_CONNECT',
+  22: 'SKIP_BODY',
+  23: 'DEBUG',
+  24: 'PARSED',
+  32: 'POSITION',
+  36: 'STATE',
+  37: 'PAUSED',
+  38: 'ERROR_CODE',
+  40: 'CONTENT_LENGTH',
+  48: 'CHUNK_SIZE',
+  56: 'REMAINING_CONTENT_LENGTH',
+  64: 'REMAINING_CHUNK_SIZE',
+  72: 'STATUS',
+  76: 'METHOD',
+  77: 'HAS_CONTENT_LENGTH',
+  78: 'HAS_TRANSFER_ENCODING',
+  79: 'HAS_CHUNKED_TRANSFER_ENCODING',
+  80: 'HAS_CONNECTION_CLOSE',
+  81: 'HAS_CONNECTION_UPGRADE',
+  82: 'HAS_UPGRADE',
+  83: 'HAS_TRAILERS',
+  88: 'ACTIVE_CALLBACKS',
+  96: 'ACTIVE_EVENTS',
+  104: 'PTR',
+  108: 'ERROR_DESCRIPTION',
+  364: 'UNCONSUMED',
+  368: 'UNCONSUMED_LEN',
+  372: 'ERROR_DESCRIPTION_LEN',
+  376: 'EVENTS'
+})
+
+function isAutodetect (parser) {
+  return this.is_autodetect(parser) !== 0
+}
+
+function isRequest (parser) {
+  return this.is_request(parser) !== 0
+}
+
+function isPaused (parser) {
+  return this.is_paused(parser) !== 0
+}
+
+function shouldManageUnconsumed (parser) {
+  return this.should_manage_unconsumed(parser) !== 0
+}
+
+function shouldSuspendAfterHeaders (parser) {
+  return this.should_suspend_after_headers(parser) !== 0
+}
+
+function getMaxStartLineLength (parser) {
+  return this.get_max_start_line_length(parser) >>> 0
+}
+
+function getMaxHeaderLength (parser) {
+  return this.get_max_header_length(parser) >>> 0
+}
+
+function getMaxBodyPayload (parser) {
+  return BigInt.asUintN(64, this.get_max_body_payload(parser))
+}
+
+function shouldContinueWithoutData (parser) {
+  return this.should_continue_without_data(parser) !== 0
+}
+
+function isConnect (parser) {
+  return this.is_connect(parser) !== 0
+}
+
+function isDebug (parser) {
+  return this.is_debug(parser) !== 0
+}
+
+function shouldSkipBody (parser) {
+  return this.should_skip_body(parser) !== 0
+}
+
+function getState (parser) {
+  return this.get_state(parser) >>> 0
+}
+
+function getPosition (parser) {
+  return this.get_position(parser) >>> 0
+}
+
+function getParsed (parser) {
+  return BigInt.asUintN(64, this.get_parsed(parser))
+}
+
+function getErrorCode (parser) {
+  return this.get_error_code(parser) >>> 0
+}
+
+function getMethod (parser) {
+  return this.get_method(parser) >>> 0
+}
+
+function getStatus (parser) {
+  return this.get_status(parser) >>> 0
+}
+
+function hasConnectionClose (parser) {
+  return this.has_connection_close(parser) !== 0
+}
+
+function hasConnectionUpgrade (parser) {
+  return this.has_connection_upgrade(parser) !== 0
+}
+
+function getContentLength (parser) {
+  return BigInt.asUintN(64, this.get_content_length(parser))
+}
+
+function getChunkSize (parser) {
+  return BigInt.asUintN(64, this.get_chunk_size(parser))
+}
+
+function getRemainingContentLength (parser) {
+  return BigInt.asUintN(64, this.get_remaining_content_length(parser))
+}
+
+function getRemainingChunkSize (parser) {
+  return BigInt.asUintN(64, this.get_remaining_chunk_size(parser))
+}
+
+function hasContentLength (parser) {
+  return this.has_content_length(parser) !== 0
+}
+
+function hasTransferEncoding (parser) {
+  return this.has_transfer_encoding(parser) !== 0
+}
+
+function hasChunkedTransferEncoding (parser) {
+  return this.has_chunked_transfer_encoding(parser) !== 0
+}
+
+function hasUpgrade (parser) {
+  return this.has_upgrade(parser) !== 0
+}
+
+function hasTrailers (parser) {
+  return this.has_trailers(parser) !== 0
+}
+
+function getErrorDescription (parser) {
+  const raw = this.get_error_description_raw(parser)
+  const len = Number(BigInt.asUintN(32, raw))
+  const ptr = Number(raw >> 32n)
+  return textDecoder.decode(new Uint8Array(this.memory.buffer, ptr, len))
+}
+
+function setShouldAutodetect (parser, value) {
+  this.set_should_autodetect(parser, value)
+}
+
+function setShouldContinueWithoutData (parser, value) {
+  this.set_should_continue_without_data(parser, value)
+}
+
+function setIsRequest (parser, value) {
+  this.set_is_request(parser, value)
+}
+
+function setIsConnect (parser, value) {
+  this.set_is_connect(parser, value)
+}
+
+function setDebug (parser, value) {
+  this.set_debug(parser, value)
+}
+
+function setShouldManageUnconsumed (parser, value) {
+  this.set_should_manage_unconsumed(parser, value)
+}
+
+function setShouldSuspendAfterHeaders (parser, value) {
+  this.set_should_suspend_after_headers(parser, value)
+}
+
+function setMaxStartLineLength (parser, value) {
+  this.set_max_start_line_length(parser, value)
+}
+
+function setMaxHeaderLength (parser, value) {
+  this.set_max_header_length(parser, value)
+}
+
+function setMaxBodyPayload (parser, value) {
+  this.set_max_body_payload(parser, value)
+}
+
+function setShouldSkipBody (parser, value) {
+  this.set_should_skip_body(parser, value)
+}
+
+function setActiveCallbacks (parser, value) {
+  this.set_active_callbacks(parser, value)
+}
+
+function setActiveEvents (parser, value) {
+  this.set_active_events(parser, value)
+}
+
+function simpleCreate (spans, create) {
+  const parser = create()
+  spans[parser] = []
+  this.setActiveCallbacks(parser, this.CALLBACK_ACTIVE_ALL)
+  return parser
+}
+
+function simpleDestroy (spans, destroy, parser) {
+  spans[parser] = undefined
+  destroy(parser)
+}
+
+function noop () {}
+
+function setup (env = {}) {
+  let { logger: logOption, ...instanceEnvironment } = env
+  let logger = noop
+  const context = {}
+
+  if (logOption) {
+    if (typeof logOption !== 'function') {
+      logOption = console.log
+    }
+
+    logger = log.bind(context, logOption)
+  }
+
+  // Create the WASM instance
+  /* eslint-disable-next-line no-undef */
+  const instance = new WebAssembly.Instance(wasmModule, {
+    env: {
+      logger,
+      on_error: noop,
+      on_finish: noop,
+      on_message_start: noop,
+      on_message_complete: noop,
+      on_request: noop,
+      on_response: noop,
+      on_reset: noop,
+      on_method: noop,
+      on_url: noop,
+      on_protocol: noop,
+      on_version: noop,
+      on_status: noop,
+      on_reason: noop,
+      on_header_name: noop,
+      on_header_value: noop,
+      on_headers: noop,
+      on_connect: noop,
+      on_upgrade: noop,
+      on_chunk_length: noop,
+      on_chunk_extension_name: noop,
+      on_chunk_extension_value: noop,
+      on_chunk: noop,
+      on_body: noop,
+      on_data: noop,
+      on_trailer_name: noop,
+      on_trailer_value: noop,
+      on_trailers: noop,
+      on_state_change: noop,
+      ...instanceEnvironment
+    }
+  })
+
+  const wasm = instance.exports
+  context.memory = wasm.memory
+
+  const milo = {
+    version: {
+      raw: '0.9.0',
+      major: 0,
+      minor: 9,
+      patch: 0,
+      prerelease: ''
+    },
+    METHOD_OTHER: 0,
+    METHOD_GET: 1,
+    METHOD_HEAD: 2,
+    METHOD_POST: 3,
+    METHOD_PUT: 4,
+    METHOD_DELETE: 5,
+    METHOD_CONNECT: 6,
+    METHOD_OPTIONS: 7,
+    METHOD_TRACE: 8,
+    METHOD_PATCH: 9,
+    METHOD_PRI: 10,
+    CALLBACK_ON_ERROR: 0,
+    CALLBACK_ON_FINISH: 1,
+    CALLBACK_ON_MESSAGE_START: 2,
+    CALLBACK_ON_MESSAGE_COMPLETE: 3,
+    CALLBACK_ON_REQUEST: 4,
+    CALLBACK_ON_RESPONSE: 5,
+    CALLBACK_ON_RESET: 6,
+    CALLBACK_ON_METHOD: 7,
+    CALLBACK_ON_URL: 8,
+    CALLBACK_ON_PROTOCOL: 9,
+    CALLBACK_ON_VERSION: 10,
+    CALLBACK_ON_STATUS: 11,
+    CALLBACK_ON_REASON: 12,
+    CALLBACK_ON_HEADER_NAME: 13,
+    CALLBACK_ON_HEADER_VALUE: 14,
+    CALLBACK_ON_HEADERS: 15,
+    CALLBACK_ON_CONNECT: 16,
+    CALLBACK_ON_UPGRADE: 17,
+    CALLBACK_ON_CHUNK_LENGTH: 18,
+    CALLBACK_ON_CHUNK_EXTENSION_NAME: 19,
+    CALLBACK_ON_CHUNK_EXTENSION_VALUE: 20,
+    CALLBACK_ON_CHUNK: 21,
+    CALLBACK_ON_BODY: 22,
+    CALLBACK_ON_DATA: 23,
+    CALLBACK_ON_TRAILER_NAME: 24,
+    CALLBACK_ON_TRAILER_VALUE: 25,
+    CALLBACK_ON_TRAILERS: 26,
+    CALLBACK_ON_STATE_CHANGE: 27,
+    EVENT_END: 0,
+    EVENT_ERROR: 1,
+    EVENT_FINISH: 2,
+    EVENT_MESSAGE_START: 3,
+    EVENT_MESSAGE_COMPLETE: 4,
+    EVENT_REQUEST: 5,
+    EVENT_RESPONSE: 6,
+    EVENT_RESET: 7,
+    EVENT_METHOD: 8,
+    EVENT_URL: 9,
+    EVENT_PROTOCOL: 10,
+    EVENT_VERSION: 11,
+    EVENT_STATUS: 12,
+    EVENT_REASON: 13,
+    EVENT_HEADER_NAME: 14,
+    EVENT_HEADER_VALUE: 15,
+    EVENT_HEADERS: 16,
+    EVENT_CONNECT: 17,
+    EVENT_UPGRADE: 18,
+    EVENT_CHUNK_LENGTH: 19,
+    EVENT_CHUNK_EXTENSION_NAME: 20,
+    EVENT_CHUNK_EXTENSION_VALUE: 21,
+    EVENT_CHUNK: 22,
+    EVENT_BODY: 23,
+    EVENT_DATA: 24,
+    EVENT_TRAILER_NAME: 25,
+    EVENT_TRAILER_VALUE: 26,
+    EVENT_TRAILERS: 27,
+    EVENT_STATE_CHANGE: 28,
+    CALLBACK_ACTIVE_NONE: 0n,
+    EVENT_ACTIVE_NONE: 0n,
+    CALLBACK_ACTIVE_ON_ERROR: 1n,
+    EVENT_ACTIVE_ON_ERROR: 1n,
+    CALLBACK_ACTIVE_ON_FINISH: 2n,
+    EVENT_ACTIVE_ON_FINISH: 2n,
+    CALLBACK_ACTIVE_ON_MESSAGE_START: 4n,
+    EVENT_ACTIVE_ON_MESSAGE_START: 4n,
+    CALLBACK_ACTIVE_ON_MESSAGE_COMPLETE: 8n,
+    EVENT_ACTIVE_ON_MESSAGE_COMPLETE: 8n,
+    CALLBACK_ACTIVE_ON_REQUEST: 16n,
+    EVENT_ACTIVE_ON_REQUEST: 16n,
+    CALLBACK_ACTIVE_ON_RESPONSE: 32n,
+    EVENT_ACTIVE_ON_RESPONSE: 32n,
+    CALLBACK_ACTIVE_ON_RESET: 64n,
+    EVENT_ACTIVE_ON_RESET: 64n,
+    CALLBACK_ACTIVE_ON_METHOD: 128n,
+    EVENT_ACTIVE_ON_METHOD: 128n,
+    CALLBACK_ACTIVE_ON_URL: 256n,
+    EVENT_ACTIVE_ON_URL: 256n,
+    CALLBACK_ACTIVE_ON_PROTOCOL: 512n,
+    EVENT_ACTIVE_ON_PROTOCOL: 512n,
+    CALLBACK_ACTIVE_ON_VERSION: 1024n,
+    EVENT_ACTIVE_ON_VERSION: 1024n,
+    CALLBACK_ACTIVE_ON_STATUS: 2048n,
+    EVENT_ACTIVE_ON_STATUS: 2048n,
+    CALLBACK_ACTIVE_ON_REASON: 4096n,
+    EVENT_ACTIVE_ON_REASON: 4096n,
+    CALLBACK_ACTIVE_ON_HEADER_NAME: 8192n,
+    EVENT_ACTIVE_ON_HEADER_NAME: 8192n,
+    CALLBACK_ACTIVE_ON_HEADER_VALUE: 16384n,
+    EVENT_ACTIVE_ON_HEADER_VALUE: 16384n,
+    CALLBACK_ACTIVE_ON_HEADERS: 32768n,
+    EVENT_ACTIVE_ON_HEADERS: 32768n,
+    CALLBACK_ACTIVE_ON_CONNECT: 65536n,
+    EVENT_ACTIVE_ON_CONNECT: 65536n,
+    CALLBACK_ACTIVE_ON_UPGRADE: 131072n,
+    EVENT_ACTIVE_ON_UPGRADE: 131072n,
+    CALLBACK_ACTIVE_ON_CHUNK_LENGTH: 262144n,
+    EVENT_ACTIVE_ON_CHUNK_LENGTH: 262144n,
+    CALLBACK_ACTIVE_ON_CHUNK_EXTENSION_NAME: 524288n,
+    EVENT_ACTIVE_ON_CHUNK_EXTENSION_NAME: 524288n,
+    CALLBACK_ACTIVE_ON_CHUNK_EXTENSION_VALUE: 1048576n,
+    EVENT_ACTIVE_ON_CHUNK_EXTENSION_VALUE: 1048576n,
+    CALLBACK_ACTIVE_ON_CHUNK: 2097152n,
+    EVENT_ACTIVE_ON_CHUNK: 2097152n,
+    CALLBACK_ACTIVE_ON_BODY: 4194304n,
+    EVENT_ACTIVE_ON_BODY: 4194304n,
+    CALLBACK_ACTIVE_ON_DATA: 8388608n,
+    EVENT_ACTIVE_ON_DATA: 8388608n,
+    CALLBACK_ACTIVE_ON_TRAILER_NAME: 16777216n,
+    EVENT_ACTIVE_ON_TRAILER_NAME: 16777216n,
+    CALLBACK_ACTIVE_ON_TRAILER_VALUE: 33554432n,
+    EVENT_ACTIVE_ON_TRAILER_VALUE: 33554432n,
+    CALLBACK_ACTIVE_ON_TRAILERS: 67108864n,
+    EVENT_ACTIVE_ON_TRAILERS: 67108864n,
+    CALLBACK_ACTIVE_ON_STATE_CHANGE: 134217728n,
+    EVENT_ACTIVE_ON_STATE_CHANGE: 134217728n,
+    CALLBACK_ACTIVE_ALL: 268435455n,
+    EVENT_ACTIVE_ALL: 268435455n,
+    ERROR_NONE: 0,
+    ERROR_USER: 1,
+    ERROR_CALLBACK_ERROR: 2,
+    ERROR_UNEXPECTED_STATE: 3,
+    ERROR_UNEXPECTED_DATA: 4,
+    ERROR_UNEXPECTED_EOF: 5,
+    ERROR_UNEXPECTED_CHARACTER: 6,
+    ERROR_UNEXPECTED_CONTENT_LENGTH: 7,
+    ERROR_UNEXPECTED_TRANSFER_ENCODING: 8,
+    ERROR_UNEXPECTED_CONTENT: 9,
+    ERROR_UNEXPECTED_TRAILERS: 10,
+    ERROR_INVALID_VERSION: 11,
+    ERROR_INVALID_STATUS: 12,
+    ERROR_INVALID_CONTENT_LENGTH: 13,
+    ERROR_INVALID_TRANSFER_ENCODING: 14,
+    ERROR_INVALID_CHUNK_SIZE: 15,
+    ERROR_MISSING_CONNECTION_UPGRADE: 16,
+    ERROR_UNSUPPORTED_HTTP_VERSION: 17,
+    STATE_START: 0,
+    STATE_FINISH: 1,
+    STATE_ERROR: 2,
+    STATE_REQUEST_LINE: 3,
+    STATE_STATUS_LINE: 4,
+    STATE_HTTP2_PREFACE: 5,
+    STATE_HEADER: 6,
+    STATE_BODY_DECISION: 7,
+    STATE_BODY_VIA_CONTENT_LENGTH: 8,
+    STATE_BODY_WITH_NO_LENGTH: 9,
+    STATE_CHUNK_HEADER: 10,
+    STATE_CHUNK_EXTENSIONS: 11,
+    STATE_CHUNK_DATA: 12,
+    STATE_TRAILER: 13,
+    STATE_TUNNEL: 14,
+    PARSER_FIELD_MAX_START_LINE_LENGTH: 0,
+    PARSER_FIELD_MAX_HEADER_LENGTH: 4,
+    PARSER_FIELD_MAX_BODY_PAYLOAD: 8,
+    PARSER_FIELD_AUTODETECT: 16,
+    PARSER_FIELD_IS_REQUEST: 17,
+    PARSER_FIELD_SUSPEND_AFTER_HEADERS: 18,
+    PARSER_FIELD_MANAGE_UNCONSUMED: 19,
+    PARSER_FIELD_CONTINUE_WITHOUT_DATA: 20,
+    PARSER_FIELD_IS_CONNECT: 21,
+    PARSER_FIELD_SKIP_BODY: 22,
+    PARSER_FIELD_DEBUG: 23,
+    PARSER_FIELD_PARSED: 24,
+    PARSER_FIELD_POSITION: 32,
+    PARSER_FIELD_STATE: 36,
+    PARSER_FIELD_PAUSED: 37,
+    PARSER_FIELD_ERROR_CODE: 38,
+    PARSER_FIELD_CONTENT_LENGTH: 40,
+    PARSER_FIELD_CHUNK_SIZE: 48,
+    PARSER_FIELD_REMAINING_CONTENT_LENGTH: 56,
+    PARSER_FIELD_REMAINING_CHUNK_SIZE: 64,
+    PARSER_FIELD_STATUS: 72,
+    PARSER_FIELD_METHOD: 76,
+    PARSER_FIELD_HAS_CONTENT_LENGTH: 77,
+    PARSER_FIELD_HAS_TRANSFER_ENCODING: 78,
+    PARSER_FIELD_HAS_CHUNKED_TRANSFER_ENCODING: 79,
+    PARSER_FIELD_HAS_CONNECTION_CLOSE: 80,
+    PARSER_FIELD_HAS_CONNECTION_UPGRADE: 81,
+    PARSER_FIELD_HAS_UPGRADE: 82,
+    PARSER_FIELD_HAS_TRAILERS: 83,
+    PARSER_FIELD_ACTIVE_CALLBACKS: 88,
+    PARSER_FIELD_ACTIVE_EVENTS: 96,
+    PARSER_FIELD_PTR: 104,
+    PARSER_FIELD_ERROR_DESCRIPTION: 108,
+    PARSER_FIELD_UNCONSUMED: 364,
+    PARSER_FIELD_UNCONSUMED_LEN: 368,
+    PARSER_FIELD_ERROR_DESCRIPTION_LEN: 372,
+    PARSER_FIELD_EVENTS: 376,
+    Errors,
+    Methods,
+    Callbacks,
+    CallbackActives,
+    Events,
+    EventActives,
+    States,
+    ParserFields,
+    isAutodetect: isAutodetect.bind(wasm),
+    isRequest: isRequest.bind(wasm),
+    isPaused: isPaused.bind(wasm),
+    shouldManageUnconsumed: shouldManageUnconsumed.bind(wasm),
+    shouldSuspendAfterHeaders: shouldSuspendAfterHeaders.bind(wasm),
+    getMaxStartLineLength: getMaxStartLineLength.bind(wasm),
+    getMaxHeaderLength: getMaxHeaderLength.bind(wasm),
+    getMaxBodyPayload: getMaxBodyPayload.bind(wasm),
+    shouldContinueWithoutData: shouldContinueWithoutData.bind(wasm),
+    isConnect: isConnect.bind(wasm),
+    isDebug: isDebug.bind(wasm),
+    shouldSkipBody: shouldSkipBody.bind(wasm),
+    getState: getState.bind(wasm),
+    getPosition: getPosition.bind(wasm),
+    getParsed: getParsed.bind(wasm),
+    getErrorCode: getErrorCode.bind(wasm),
+    getMethod: getMethod.bind(wasm),
+    getStatus: getStatus.bind(wasm),
+    hasConnectionClose: hasConnectionClose.bind(wasm),
+    hasConnectionUpgrade: hasConnectionUpgrade.bind(wasm),
+    getContentLength: getContentLength.bind(wasm),
+    getChunkSize: getChunkSize.bind(wasm),
+    getRemainingContentLength: getRemainingContentLength.bind(wasm),
+    getRemainingChunkSize: getRemainingChunkSize.bind(wasm),
+    hasContentLength: hasContentLength.bind(wasm),
+    hasTransferEncoding: hasTransferEncoding.bind(wasm),
+    hasChunkedTransferEncoding: hasChunkedTransferEncoding.bind(wasm),
+    hasUpgrade: hasUpgrade.bind(wasm),
+    hasTrailers: hasTrailers.bind(wasm),
+    getErrorDescription: getErrorDescription.bind(wasm),
+    setShouldAutodetect: setShouldAutodetect.bind(wasm),
+    setShouldContinueWithoutData: setShouldContinueWithoutData.bind(wasm),
+    setIsRequest: setIsRequest.bind(wasm),
+    setIsConnect: setIsConnect.bind(wasm),
+    setDebug: setDebug.bind(wasm),
+    setShouldManageUnconsumed: setShouldManageUnconsumed.bind(wasm),
+    setShouldSuspendAfterHeaders: setShouldSuspendAfterHeaders.bind(wasm),
+    setMaxStartLineLength: setMaxStartLineLength.bind(wasm),
+    setMaxHeaderLength: setMaxHeaderLength.bind(wasm),
+    setMaxBodyPayload: setMaxBodyPayload.bind(wasm),
+    setShouldSkipBody: setShouldSkipBody.bind(wasm),
+    setActiveCallbacks: setActiveCallbacks.bind(wasm),
+    setActiveEvents: setActiveEvents.bind(wasm),
+    memory: wasm.memory,
+    alloc: alloc.bind(wasm),
+    dealloc: dealloc.bind(wasm),
+    create: create.bind(wasm),
+    destroy: destroy.bind(wasm),
+    parse: parse.bind(wasm),
+    fail: fail.bind(wasm),
+    hasDebug: hasDebug.bind(wasm),
+    clear: wasm.clear,
+    complete: wasm.complete,
+    finish: wasm.finish,
+    pause: wasm.pause,
+    reset: wasm.reset,
+    resume: wasm.resume
+  }
+
+  return milo
+}
+
+function simple () {
+  const spans = {}
+
+  const milo = setup({/* REPLACE: callbacks:simple */})
+
+  milo.spans = spans
+  milo.create = simpleCreate.bind(milo, spans, milo.create)
+  milo.destroy = simpleDestroy.bind(milo, spans, milo.destroy)
+
+  return milo
+}
+
+module.exports = { wasmModule, noop, setup, simple }
+
+
+/***/ }),
+
+/***/ 2453:
+/***/ ((module) => {
+
+const wasmModule = new WebAssembly.Module(
+  Buffer.from(
+    'AGFzbQEAAAABQgtgA39/fwBgAX8Bf2ACf38AYAF/AGABfwF+YAJ/fgBgBH9/f38AYAABf2AIf39/f39/f3wAYAN/f38Bf2ACf38BfwKUBBwDZW52CG9uX2Vycm9yAAADZW52Cm9uX2hlYWRlcnMACANlbnYJb25fZmluaXNoAAADZW52EG9uX21lc3NhZ2Vfc3RhcnQAAANlbnYTb25fbWVzc2FnZV9jb21wbGV0ZQAAA2Vudgpvbl9yZXF1ZXN0AAADZW52C29uX3Jlc3BvbnNlAAADZW52CG9uX3Jlc2V0AAADZW52CW9uX21ldGhvZAAAA2VudgZvbl91cmwAAANlbnYLb25fcHJvdG9jb2wAAANlbnYKb25fdmVyc2lvbgAAA2Vudglvbl9zdGF0dXMAAANlbnYJb25fcmVhc29uAAADZW52Dm9uX2hlYWRlcl9uYW1lAAADZW52D29uX2hlYWRlcl92YWx1ZQAAA2Vudgpvbl9jb25uZWN0AAADZW52Cm9uX3VwZ3JhZGUAAANlbnYPb25fY2h1bmtfbGVuZ3RoAAADZW52F29uX2NodW5rX2V4dGVuc2lvbl9uYW1lAAADZW52GG9uX2NodW5rX2V4dGVuc2lvbl92YWx1ZQAAA2Vudghvbl9jaHVuawAAA2Vudgdvbl9ib2R5AAADZW52B29uX2RhdGEAAANlbnYPb25fdHJhaWxlcl9uYW1lAAADZW52EG9uX3RyYWlsZXJfdmFsdWUAAANlbnYLb25fdHJhaWxlcnMAAANlbnYPb25fc3RhdGVfY2hhbmdlAAADQkEGAAEDAwcCAwYDBAQBBAQBAQEEAQQEAQEBAQEBAQEBAQEBAQEHCQMCAwUFAgICBQICAgICAgIBAQEBCgECAwICAgUDAQARBgkBfwFBgIDAAAsHnQg5Bm1lbW9yeQIABWFsbG9jAB4FY2xlYXIAHwhjb21wbGV0ZQAgBmNyZWF0ZQAhB2RlYWxsb2MAIgdkZXN0cm95ACMEZmFpbAAkBmZpbmlzaAAlDmdldF9jaHVua19zaXplACYSZ2V0X2NvbnRlbnRfbGVuZ3RoACcOZ2V0X2Vycm9yX2NvZGUAKBlnZXRfZXJyb3JfZGVzY3JpcHRpb25fcmF3ACkUZ2V0X21heF9ib2R5X3BheWxvYWQAKhVnZXRfbWF4X2hlYWRlcl9sZW5ndGgAKxlnZXRfbWF4X3N0YXJ0X2xpbmVfbGVuZ3RoACwKZ2V0X21ldGhvZAAtCmdldF9wYXJzZWQALgxnZXRfcG9zaXRpb24ALxhnZXRfcmVtYWluaW5nX2NodW5rX3NpemUAMBxnZXRfcmVtYWluaW5nX2NvbnRlbnRfbGVuZ3RoADEJZ2V0X3N0YXRlADIKZ2V0X3N0YXR1cwAzHWhhc19jaHVua2VkX3RyYW5zZmVyX2VuY29kaW5nADQUaGFzX2Nvbm5lY3Rpb25fY2xvc2UANRZoYXNfY29ubmVjdGlvbl91cGdyYWRlADYSaGFzX2NvbnRlbnRfbGVuZ3RoADcMaGFzX3RyYWlsZXJzADgVaGFzX3RyYW5zZmVyX2VuY29kaW5nADkLaGFzX3VwZ3JhZGUAOg1pc19hdXRvZGV0ZWN0ADsKaXNfY29ubmVjdAA8CGlzX2RlYnVnAD0JaXNfcGF1c2VkAD4KaXNfcmVxdWVzdAA/Dm1pbG9faGFzX2RlYnVnAEAFcGFyc2UAQQVwYXVzZQBCBXJlc2V0AEMGcmVzdW1lAEQUc2V0X2FjdGl2ZV9jYWxsYmFja3MARRFzZXRfYWN0aXZlX2V2ZW50cwBGCXNldF9kZWJ1ZwBHDnNldF9pc19jb25uZWN0AEgOc2V0X2lzX3JlcXVlc3QASRRzZXRfbWF4X2JvZHlfcGF5bG9hZABKFXNldF9tYXhfaGVhZGVyX2xlbmd0aABLGXNldF9tYXhfc3RhcnRfbGluZV9sZW5ndGgATBVzZXRfc2hvdWxkX2F1dG9kZXRlY3QATSBzZXRfc2hvdWxkX2NvbnRpbnVlX3dpdGhvdXRfZGF0YQBOHHNldF9zaG91bGRfbWFuYWdlX3VuY29uc3VtZWQATxRzZXRfc2hvdWxkX3NraXBfYm9keQBQIHNldF9zaG91bGRfc3VzcGVuZF9hZnRlcl9oZWFkZXJzAFEcc2hvdWxkX2NvbnRpbnVlX3dpdGhvdXRfZGF0YQBSGHNob3VsZF9tYW5hZ2VfdW5jb25zdW1lZABTEHNob3VsZF9za2lwX2JvZHkAVBxzaG91bGRfc3VzcGVuZF9hZnRlcl9oZWFkZXJzAFUKoLQCQdgDAgJ/BXsCQCACIANPDQAgAS0AACEBIAMgAmsiBUEPTQRAIANBAWsDQCAB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QgBSBEAgBUEQakGBgARJDQEMGQsgA0EBOgAUIANCADcDOCAFQV5IDRgMAwsgAygCICEBIAMoAvgCIAVqQRc6AAAgAygC+AIgBWpBAWogACABajYAACADKAL4AiAFakEFakEANgAAIANBAToAFCADQgA3AzggBUEJaiEFDAILIAMoAiAhASADKAL4AiAFakEYOgAAIAMoAvgCIAVqQQFqIAE2AAAgAygC+AIgBWpBBWogADYAACAFQQlqIQULIAMgAykDOCAvfTcDOEEAIQcMAwsCQCAXRQ0AIDRCAFIEQCAFQXBIDRYgAygCICECIAMoAvgCIAVqIgFBBDoAACABQQVqQQA2AAAgAUEBaiAAIAJqNgAAIAVBCWohBQsgM1ANACAFQXBIDRUgAygCICECIAMoAvgCIAVqIgFBBzoAACABQQVqQQA2AAAgAUEBaiAAIAJqNgAAIAVBCWohBQsgA0EAOgAWIANBADoAFAJAAkAgAy0AUkEBRgRAIAMtABFBAXENAQsgAy0AUA0BIAMtACRBAkcNAkEAIQcMBAtBACEHIAMtACRBAkYNAyADQQ46ACQMAwsgGUUNASAFQXBIDRQgAygCICECIAMoAvgCIAVqIgFBAjoAACABQQVqQQA2AAAgAUEBaiACNgAAIAVBCWohBQwBC0EAIQcgA0EAOgAkDAELQQAhByADLQAkQQJGDQAgA0EBOgAkCyADIAMoAiAgAGo2AiAgACAJSw0NIAsgAGshCyAAIARqIQQgCSAAayEJDAkLIANBAToAFCAFQd//A2tB//97SQ0QAkAgF0UNACA0QgBSBEAgBUFwSA0SIAMoAiAhASADKAL4AiAFaiIAQQQ6AAAgAEEFakEANgAAIABBAWogATYAACAFQQlqIQULIDNQDQAgBUFwSA0RIAMoAiAhASADKAL4AiAFaiIAQQc6AAAgAEEFakEANgAAIABBAWogATYAACAFQQlqIQULIANBADoAFiADQQA6ABQLIAMtAFBBAUcNASAZBEAgBUFwSA0QIAMoAiAhASADKAL4AiAFaiIAQQI6AAAgAEEFakEANgAAIABBAWogATYAACAFQQlqIQULIANBAToAJAtBACEHDAYLQQAhByADQQA6ACQMBQsgAygCACALSwRAQQEhEQwNCyADQQY6ACYgA0ECOgAkIANBu4rAAP0AAAD9CwBsIANBy4rAACgAADYAfAtBgAEhC0EUDAoLIAMoAgAgC0sEQEEBIREMCwsgA0EGOgAmIANBAjoAJCADQaWIwAD9AAAA/QsAbCADQbKIwAApAAA3AHkLQYEBIQtBFQwIC0EAIQcgAy0AJEECRg0AIANBBDoAJAtBASERIAdBAXENByADLQAlQQFxRQ0ACwwGCwALIAMoAvgCQQA6AAAMBQsAC0H5ACELQQ0MAQsgA0EGOgAmIANBAjoAJCADQZaIwAApAAA3AGwgA0GdiMAAKQAANwBzQfsAIQtBDws6APQCQQAhESADIAtqQQA6AAALIAMgAykDGCADKAIgIgutfDcDGAJAIAMtABNFDQAgAygC8AIiAARAIAMoAuwCIAAQWAsgA0IANwLsAiALIBRPDQACQAJAIAlFBEBBASEADAELIAlBARBWIgBFDQEgCUUNACAAIAQgCfwKAAALIAMgADYC7AIgAyAJNgLwAgwBCwALAkACQCAuQgGDUCARcgRAICBFDQEMAgsgBUH6/wNrQf//e0kNACADKAL4AiAFaiIAQQE6AAAgAEEBaiADKAIgNgAAIABBBWogAy0AJjoAACAFQQZqIQULIAMoAvgCIAVqQQA6AAALAkAgAykDWCIuUA0AIC5CAYMhLyAuQoCAAoMhMCAuQgKDITEgLkIEgyEzIC5CCIMhNCAuQhCDITUgLkIggyE2IC5CwACDITcgLkKAAYMhMiAuQoACgyE5IC5CgASDITogLkKACIMhOyAuQoAQgyE8IC5CgCCDIT0gLkKAwACDIT4gLkKAgAGDIT8gLkKAgASDIUAgLkKAgAiDIUEgLkKAgBCDIUIgLkKAgCCDIUMgLkKAgMAAgyFEIC5CgICAAYMhRSAuQoCAgAKDIUYgLkKAgIAEgyFHIC5CgICACIMhOCAuQoCAgBCDIUggLkKAgIAggyFJIC5CgICAwACDIS4gAygCaCECIAMoAvgCIQZBACEEA0ACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkAgBCAGaiIALQAAQQFrDhwAAgMEBQYHCAkKCwwNDg8BEBESExQVFhcYGRobHwtBBiEBIC9QDRsgAiAAQQFqKAAAQQAQACAEQQZqIQQMHQtBEyEBIDBQDRogAiAAQQFqKAAAIABBBWovAAAgAEEHai0AAEEARyAAQQhqLQAAQQBHIABBCWotAABBAEcgAEEKai0AACAAQQtqKQAAuhABIARBE2ohBAwcC0EJIQEgMVANGSACIABBAWooAAAgAEEFaigAABACIARBCWohBAwbC0EJIQEgM1ANGCACIABBAWooAAAgAEEFaigAABADIARBCWohBAwaC0EJIQEgNFANFyACIABBAWooAAAgAEEFaigAABAEIARBCWohBAwZC0EJIQEgNVANFiACIABBAWooAAAgAEEFaigAABAFIARBCWohBAwYC0EJIQEgNlANFSACIABBAWooAAAgAEEFaigAABAGIARBCWohBAwXC0EJIQEgN1ANFCACIABBAWooAAAgAEEFaigAABAHIARBCWohBAwWC0EJIQEgMlANEyACIABBAWooAAAgAEEFaigAABAIIARBCWohBAwVC0EJIQEgOVANEiACIABBAWooAAAgAEEFaigAABAJIARBCWohBAwUC0EJIQEgOlANESACIABBAWooAAAgAEEFaigAABAKIARBCWohBAwTC0EJIQEgO1ANECACIABBAWooAAAgAEEFaigAABALIARBCWohBAwSC0EJIQEgPFANDyACIABBAWooAAAgAEEFaigAABAMIARBCWohBAwRC0EJIQEgPVANDiACIABBAWooAAAgAEEFaigAABANIARBCWohBAwQC0EJIQEgPlANDSACIABBAWooAAAgAEEFaigAABAOIARBCWohBAwPC0EJIQEgP1ANDCACIABBAWooAAAgAEEFaigAABAPIARBCWohBAwOC0EJIQEgQFANCyACIABBAWooAAAgAEEFaigAABAQIARBCWohBAwNC0EJIQEgQVANCiACIABBAWooAAAgAEEFaigAABARIARBCWohBAwMC0EJIQEgQlANCSACIABBAWooAAAgAEEFaigAABASIARBCWohBAwLC0EJIQEgQ1ANCCACIABBAWooAAAgAEEFaigAABATIARBCWohBAwKC0EJIQEgRFANByACIABBAWooAAAgAEEFaigAABAUIARBCWohBAwJC0EJIQEgRVANBiACIABBAWooAAAgAEEFaigAABAVIARBCWohBAwIC0EJIQEgRlANBSACIABBAWooAAAgAEEFaigAABAWIARBCWohBAwHC0EJIQEgR1ANBCAC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AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAEGJhMAACwEBAEGghMAAC+ABAQEAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAQaGGwAALXgEAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQABAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEAAQABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQAAAAEAQYCIwAALtBBVbmV4cGVjdGVkIGVuZCBvZiBkYXRhVW5leHBlY3RlZCBkYXRhUmVxdWVzdCBsaW5lIHRvbyBsb25nSW52YWxpZCBtZXRob2QgY2hhcmFjdGVySW52YWxpZCBVUkwgY2hhcmFjdGVyUFJJIGlzIG9ubHkgdmFsaWQgd2l0aCBIVFRQLzIuMFVuc3VwcG9ydGVkIEhUVFAgdmVyc2lvbkludmFsaWQgcHJvdG9jb2xJbnZhbGlkIHByb3RvY29sIG5hbWVFeHBlY3RlZCAvIGFmdGVyIHRoZSBwcm90b2NvbCBuYW1lRXhwZWN0ZWQgc3BhY2UgYWZ0ZXIgVVJMRXhwZWN0ZWQgc3BhY2UgYWZ0ZXIgbWV0aG9kUmVxdWVzdCBsaW5lIHRvbyBzaG9ydEV4cGVjdGVkIENSTEZTdGF0dXMgbGluZSB0b28gbG9uZ0ludmFsaWQgSFRUUCByZXNwb25zZSBzdGF0dXNJbnZhbGlkIHN0YXR1cyByZWFzb24gY2hhcmFjdGVyRXhwZWN0ZWQgYSBzcGFjZSBhZnRlciBIVFRQIHJlc3BvbnNlIHN0YXR1c0V4cGVjdGVkIHNwYWNlIGFmdGVyIHByb3RvY29sU3RhdHVzIGxpbmUgdG9vIHNob3J0TWFsZm9ybWVkIEhUVFAvMi4wIHByZWZhY2VVbmV4cGVjdGVkIENvbnRlbnQtTGVuZ3RoIGhlYWRlciBmb3IgYSByZXNwb25zZSB3aXRob3V0IGJvZHlFeHBlY3RlZCBDb250ZW50LUxlbmd0aCBoZWFkZXIgdmFsdWVJbnZhbGlkIENvbnRlbnQtTGVuZ3RoIGhlYWRlckludmFsaWQgZHVwbGljYXRlIENvbnRlbnQtTGVuZ3RoIGhlYWRlclVuZXhwZWN0ZWQgQ29udGVudC1MZW5ndGggaGVhZGVyIHdoZW4gVHJhbnNmZXItRW5jb2RpbmcgaGVhZGVyIGlzIHByZXNlbnRVbmV4cGVjdGVkIFRyYW5zZmVyLUVuY29kaW5nIGhlYWRlciBmb3IgYSByZXNwb25zZSB3aXRob3V0IGJvZHlFeHBlY3RlZCBUcmFuc2Zlci1FbmNvZGluZyBoZWFkZXIgdmFsdWVUaGUgdmFsdWUgImNodW5rZWQiIGluIHRoZSBUcmFuc2Zlci1FbmNvZGluZyBoZWFkZXIgbXVzdCBiZSB0aGUgbGFzdCBwcm92aWRlZCBhbmQgY2FuIGJlIHByb3ZpZGVkIG9ubHkgb25jZVRoZSB2YWx1ZSAiY2h1bmtlZCIgaW4gdGhlIFRyYW5zZmVyLUVuY29kaW5nIGhlYWRlciBtdXN0IGJlIHRoZSBsYXN0IHByb3ZpZGVkVW5leHBlY3RlZCBUcmFuc2Zlci1FbmNvZGluZyBoZWFkZXIgd2hlbiBDb250ZW50LUxlbmd0aCBoZWFkZXIgaXMgcHJlc2VudEV4cGVjdGVkIENvbm5lY3Rpb24gaGVhZGVyIHZhbHVlSW52YWxpZCBDb25uZWN0aW9uIGhlYWRlciB2YWx1ZUV4cGVjdGVkIFRyYWlsZXIgaGVhZGVyIHZhbHVlRXhwZWN0ZWQgVXBncmFkZSBoZWFkZXIgdmFsdWVJbnZhbGlkIFVwZ3JhZGUgaGVhZGVyIHZhbHVlSW52YWxpZCBoZWFkZXIgZmllbGQgbmFtZSBjaGFyYWN0ZXJJbnZhbGlkIGhlYWRlciBmaWVsZCB2YWx1ZSBjaGFyYWN0ZXJIZWFkZXIgbGluZSB0b28gbG9uZ01pc3NpbmcgQ29ubmVjdGlvbiBoZWFkZXIgc2V0IHRvICJ1cGdyYWRlIiB3aGVuIHVzaW5nIHRoZSBVcGdyYWRlIGhlYWRlclRyYWlsZXJzIGFyZSBub3QgYWxsb3dlZCB3aGVuIG5vdCB1c2luZyBjaHVua2VkIHRyYW5zZmVyIGVuY29kaW5nVW5leHBlY3RlZCBjb250ZW50IGZvciB0aGUgcmVxdWVzdCAoR0VUIG9yIEhFQUQpVHJhbnNmZXItRW5jb2RpbmcgbGFzdCBoZWFkZXIgdmFsdWUgbXVzdCBiZSAiY2h1bmtlZCIgaWYgdGhlIGhlYWRlciBpcyBwcmVzZW50Q2h1bmsgaGVhZGVyIHRvbyBsb25nSW52YWxpZCBjaHVuayBsZW5ndGggY2hhcmFjdGVySW52YWxpZCBjaHVuayBsZW5ndGggc2l6ZUV4cGVjdGVkIGNodW5rIGV4dGVuc2lvbiBuYW1lSW52YWxpZCBjaHVuayBleHRlbnNpb24gbmFtZSBjaGFyYWN0ZXJFeHBlY3RlZCBjbG9zaW5nIHF1b3RlIGZvciBjaHVuayBleHRlbnNpb24gdmFsdWVJbnZhbGlkIGNodW5rIGV4dGVuc2lvbiBxdW90ZWQgdmFsdWUgY2hhcmFjdGVyRXhwZWN0ZWQgY2h1bmsgZXh0ZW5zaW9uIHZhbHVlSW52YWxpZCBjaHVuayBleHRlbnNpb24gdmFsdWUgY2hhcmFjdGVySW52YWxpZCBjaHVuayBleHRlbnNpb24gY2hhcmFjdGVyIGFmdGVyIHZhbHVlRXhwZWN0ZWQgQ1JMRiBhZnRlciBjaHVuayBkYXRhSW52YWxpZCB0cmFpbGVyIGZpZWxkIG5hbWUgY2hhcmFjdGVySW52YWxpZCB0cmFpbGVyIGZpZWxkIHZhbHVlIGNoYXJhY3RlclRyYWlsZXIgbGluZSB0b28gbG9uZ0ludmFsaWQgc3RhdGU=',
+    'base64'
+  )
+)
+
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
+
+function log (logger, raw) {
+  const len = Number(BigInt.asUintN(32, raw))
+  const ptr = Number(raw >> 32n)
+
+  logger(textDecoder.decode(new Uint8Array(this.memory.buffer, ptr, len)))
+}
+
+function alloc (len) {
+  return this.alloc(len) >>> 0
+}
+
+function dealloc (ptr, len) {
+  return this.dealloc(ptr, len)
+}
+
+function create () {
+  return this.create() >>> 0
+}
+
+function destroy (parser) {
+  this.destroy(parser)
+}
+
+function parse (parser, data, limit) {
+  return this.parse(parser, data, limit) >>> 0
+}
+
+function fail (parser, code, description) {
+  const len = description.length
+  const ptr = this.alloc(len)
+  const buffer = new Uint8Array(this.memory.buffer, ptr, len)
+  textEncoder.encodeInto(description, buffer)
+
+  this.fail(parser, code, ptr, len)
+  this.dealloc(ptr, len)
+}
+
+function hasDebug () {
+  return this.milo_has_debug() !== 0
+}
+
+const Errors = Object.freeze({
+  NONE: 0,
+  USER: 1,
+  CALLBACK_ERROR: 2,
+  UNEXPECTED_STATE: 3,
+  UNEXPECTED_DATA: 4,
+  UNEXPECTED_EOF: 5,
+  UNEXPECTED_CHARACTER: 6,
+  UNEXPECTED_CONTENT_LENGTH: 7,
+  UNEXPECTED_TRANSFER_ENCODING: 8,
+  UNEXPECTED_CONTENT: 9,
+  UNEXPECTED_TRAILERS: 10,
+  INVALID_VERSION: 11,
+  INVALID_STATUS: 12,
+  INVALID_CONTENT_LENGTH: 13,
+  INVALID_TRANSFER_ENCODING: 14,
+  INVALID_CHUNK_SIZE: 15,
+  MISSING_CONNECTION_UPGRADE: 16,
+  UNSUPPORTED_HTTP_VERSION: 17,
+  0: 'NONE',
+  1: 'USER',
+  2: 'CALLBACK_ERROR',
+  3: 'UNEXPECTED_STATE',
+  4: 'UNEXPECTED_DATA',
+  5: 'UNEXPECTED_EOF',
+  6: 'UNEXPECTED_CHARACTER',
+  7: 'UNEXPECTED_CONTENT_LENGTH',
+  8: 'UNEXPECTED_TRANSFER_ENCODING',
+  9: 'UNEXPECTED_CONTENT',
+  10: 'UNEXPECTED_TRAILERS',
+  11: 'INVALID_VERSION',
+  12: 'INVALID_STATUS',
+  13: 'INVALID_CONTENT_LENGTH',
+  14: 'INVALID_TRANSFER_ENCODING',
+  15: 'INVALID_CHUNK_SIZE',
+  16: 'MISSING_CONNECTION_UPGRADE',
+  17: 'UNSUPPORTED_HTTP_VERSION'
+})
+
+const Methods = Object.freeze({
+  OTHER: 0,
+  GET: 1,
+  HEAD: 2,
+  POST: 3,
+  PUT: 4,
+  DELETE: 5,
+  CONNECT: 6,
+  OPTIONS: 7,
+  TRACE: 8,
+  PATCH: 9,
+  PRI: 10,
+  0: 'OTHER',
+  1: 'GET',
+  2: 'HEAD',
+  3: 'POST',
+  4: 'PUT',
+  5: 'DELETE',
+  6: 'CONNECT',
+  7: 'OPTIONS',
+  8: 'TRACE',
+  9: 'PATCH',
+  10: 'PRI'
+})
+
+const Callbacks = Object.freeze({
+  ON_ERROR: 0,
+  ON_FINISH: 1,
+  ON_MESSAGE_START: 2,
+  ON_MESSAGE_COMPLETE: 3,
+  ON_REQUEST: 4,
+  ON_RESPONSE: 5,
+  ON_RESET: 6,
+  ON_METHOD: 7,
+  ON_URL: 8,
+  ON_PROTOCOL: 9,
+  ON_VERSION: 10,
+  ON_STATUS: 11,
+  ON_REASON: 12,
+  ON_HEADER_NAME: 13,
+  ON_HEADER_VALUE: 14,
+  ON_HEADERS: 15,
+  ON_CONNECT: 16,
+  ON_UPGRADE: 17,
+  ON_CHUNK_LENGTH: 18,
+  ON_CHUNK_EXTENSION_NAME: 19,
+  ON_CHUNK_EXTENSION_VALUE: 20,
+  ON_CHUNK: 21,
+  ON_BODY: 22,
+  ON_DATA: 23,
+  ON_TRAILER_NAME: 24,
+  ON_TRAILER_VALUE: 25,
+  ON_TRAILERS: 26,
+  ON_STATE_CHANGE: 27,
+  0: 'ON_ERROR',
+  1: 'ON_FINISH',
+  2: 'ON_MESSAGE_START',
+  3: 'ON_MESSAGE_COMPLETE',
+  4: 'ON_REQUEST',
+  5: 'ON_RESPONSE',
+  6: 'ON_RESET',
+  7: 'ON_METHOD',
+  8: 'ON_URL',
+  9: 'ON_PROTOCOL',
+  10: 'ON_VERSION',
+  11: 'ON_STATUS',
+  12: 'ON_REASON',
+  13: 'ON_HEADER_NAME',
+  14: 'ON_HEADER_VALUE',
+  15: 'ON_HEADERS',
+  16: 'ON_CONNECT',
+  17: 'ON_UPGRADE',
+  18: 'ON_CHUNK_LENGTH',
+  19: 'ON_CHUNK_EXTENSION_NAME',
+  20: 'ON_CHUNK_EXTENSION_VALUE',
+  21: 'ON_CHUNK',
+  22: 'ON_BODY',
+  23: 'ON_DATA',
+  24: 'ON_TRAILER_NAME',
+  25: 'ON_TRAILER_VALUE',
+  26: 'ON_TRAILERS',
+  27: 'ON_STATE_CHANGE'
+})
+
+const CallbackActives = Object.freeze({
+  NONE: 0n,
+  ON_ERROR: 1n,
+  ON_FINISH: 2n,
+  ON_MESSAGE_START: 4n,
+  ON_MESSAGE_COMPLETE: 8n,
+  ON_REQUEST: 16n,
+  ON_RESPONSE: 32n,
+  ON_RESET: 64n,
+  ON_METHOD: 128n,
+  ON_URL: 256n,
+  ON_PROTOCOL: 512n,
+  ON_VERSION: 1024n,
+  ON_STATUS: 2048n,
+  ON_REASON: 4096n,
+  ON_HEADER_NAME: 8192n,
+  ON_HEADER_VALUE: 16384n,
+  ON_HEADERS: 32768n,
+  ON_CONNECT: 65536n,
+  ON_UPGRADE: 131072n,
+  ON_CHUNK_LENGTH: 262144n,
+  ON_CHUNK_EXTENSION_NAME: 524288n,
+  ON_CHUNK_EXTENSION_VALUE: 1048576n,
+  ON_CHUNK: 2097152n,
+  ON_BODY: 4194304n,
+  ON_DATA: 8388608n,
+  ON_TRAILER_NAME: 16777216n,
+  ON_TRAILER_VALUE: 33554432n,
+  ON_TRAILERS: 67108864n,
+  ON_STATE_CHANGE: 134217728n,
+  ALL: 268435455n,
+  0n: 'NONE',
+  1n: 'ON_ERROR',
+  2n: 'ON_FINISH',
+  4n: 'ON_MESSAGE_START',
+  8n: 'ON_MESSAGE_COMPLETE',
+  16n: 'ON_REQUEST',
+  32n: 'ON_RESPONSE',
+  64n: 'ON_RESET',
+  128n: 'ON_METHOD',
+  256n: 'ON_URL',
+  512n: 'ON_PROTOCOL',
+  1024n: 'ON_VERSION',
+  2048n: 'ON_STATUS',
+  4096n: 'ON_REASON',
+  8192n: 'ON_HEADER_NAME',
+  16384n: 'ON_HEADER_VALUE',
+  32768n: 'ON_HEADERS',
+  65536n: 'ON_CONNECT',
+  131072n: 'ON_UPGRADE',
+  262144n: 'ON_CHUNK_LENGTH',
+  524288n: 'ON_CHUNK_EXTENSION_NAME',
+  1048576n: 'ON_CHUNK_EXTENSION_VALUE',
+  2097152n: 'ON_CHUNK',
+  4194304n: 'ON_BODY',
+  8388608n: 'ON_DATA',
+  16777216n: 'ON_TRAILER_NAME',
+  33554432n: 'ON_TRAILER_VALUE',
+  67108864n: 'ON_TRAILERS',
+  134217728n: 'ON_STATE_CHANGE',
+  268435455n: 'ALL'
+})
+
+const Events = Object.freeze({
+  END: 0,
+  ERROR: 1,
+  FINISH: 2,
+  MESSAGE_START: 3,
+  MESSAGE_COMPLETE: 4,
+  REQUEST: 5,
+  RESPONSE: 6,
+  RESET: 7,
+  METHOD: 8,
+  URL: 9,
+  PROTOCOL: 10,
+  VERSION: 11,
+  STATUS: 12,
+  REASON: 13,
+  HEADER_NAME: 14,
+  HEADER_VALUE: 15,
+  HEADERS: 16,
+  CONNECT: 17,
+  UPGRADE: 18,
+  CHUNK_LENGTH: 19,
+  CHUNK_EXTENSION_NAME: 20,
+  CHUNK_EXTENSION_VALUE: 21,
+  CHUNK: 22,
+  BODY: 23,
+  DATA: 24,
+  TRAILER_NAME: 25,
+  TRAILER_VALUE: 26,
+  TRAILERS: 27,
+  STATE_CHANGE: 28,
+  0: 'END',
+  1: 'ERROR',
+  2: 'FINISH',
+  3: 'MESSAGE_START',
+  4: 'MESSAGE_COMPLETE',
+  5: 'REQUEST',
+  6: 'RESPONSE',
+  7: 'RESET',
+  8: 'METHOD',
+  9: 'URL',
+  10: 'PROTOCOL',
+  11: 'VERSION',
+  12: 'STATUS',
+  13: 'REASON',
+  14: 'HEADER_NAME',
+  15: 'HEADER_VALUE',
+  16: 'HEADERS',
+  17: 'CONNECT',
+  18: 'UPGRADE',
+  19: 'CHUNK_LENGTH',
+  20: 'CHUNK_EXTENSION_NAME',
+  21: 'CHUNK_EXTENSION_VALUE',
+  22: 'CHUNK',
+  23: 'BODY',
+  24: 'DATA',
+  25: 'TRAILER_NAME',
+  26: 'TRAILER_VALUE',
+  27: 'TRAILERS',
+  28: 'STATE_CHANGE'
+})
+
+const EventActives = Object.freeze({
+  NONE: 0n,
+  ON_ERROR: 1n,
+  ON_FINISH: 2n,
+  ON_MESSAGE_START: 4n,
+  ON_MESSAGE_COMPLETE: 8n,
+  ON_REQUEST: 16n,
+  ON_RESPONSE: 32n,
+  ON_RESET: 64n,
+  ON_METHOD: 128n,
+  ON_URL: 256n,
+  ON_PROTOCOL: 512n,
+  ON_VERSION: 1024n,
+  ON_STATUS: 2048n,
+  ON_REASON: 4096n,
+  ON_HEADER_NAME: 8192n,
+  ON_HEADER_VALUE: 16384n,
+  ON_HEADERS: 32768n,
+  ON_CONNECT: 65536n,
+  ON_UPGRADE: 131072n,
+  ON_CHUNK_LENGTH: 262144n,
+  ON_CHUNK_EXTENSION_NAME: 524288n,
+  ON_CHUNK_EXTENSION_VALUE: 1048576n,
+  ON_CHUNK: 2097152n,
+  ON_BODY: 4194304n,
+  ON_DATA: 8388608n,
+  ON_TRAILER_NAME: 16777216n,
+  ON_TRAILER_VALUE: 33554432n,
+  ON_TRAILERS: 67108864n,
+  ON_STATE_CHANGE: 134217728n,
+  ALL: 268435455n,
+  0n: 'NONE',
+  1n: 'ON_ERROR',
+  2n: 'ON_FINISH',
+  4n: 'ON_MESSAGE_START',
+  8n: 'ON_MESSAGE_COMPLETE',
+  16n: 'ON_REQUEST',
+  32n: 'ON_RESPONSE',
+  64n: 'ON_RESET',
+  128n: 'ON_METHOD',
+  256n: 'ON_URL',
+  512n: 'ON_PROTOCOL',
+  1024n: 'ON_VERSION',
+  2048n: 'ON_STATUS',
+  4096n: 'ON_REASON',
+  8192n: 'ON_HEADER_NAME',
+  16384n: 'ON_HEADER_VALUE',
+  32768n: 'ON_HEADERS',
+  65536n: 'ON_CONNECT',
+  131072n: 'ON_UPGRADE',
+  262144n: 'ON_CHUNK_LENGTH',
+  524288n: 'ON_CHUNK_EXTENSION_NAME',
+  1048576n: 'ON_CHUNK_EXTENSION_VALUE',
+  2097152n: 'ON_CHUNK',
+  4194304n: 'ON_BODY',
+  8388608n: 'ON_DATA',
+  16777216n: 'ON_TRAILER_NAME',
+  33554432n: 'ON_TRAILER_VALUE',
+  67108864n: 'ON_TRAILERS',
+  134217728n: 'ON_STATE_CHANGE',
+  268435455n: 'ALL'
+})
+
+const States = Object.freeze({
+  START: 0,
+  FINISH: 1,
+  ERROR: 2,
+  REQUEST_LINE: 3,
+  STATUS_LINE: 4,
+  HTTP2_PREFACE: 5,
+  HEADER: 6,
+  BODY_DECISION: 7,
+  BODY_VIA_CONTENT_LENGTH: 8,
+  BODY_WITH_NO_LENGTH: 9,
+  CHUNK_HEADER: 10,
+  CHUNK_EXTENSIONS: 11,
+  CHUNK_DATA: 12,
+  TRAILER: 13,
+  TUNNEL: 14,
+  0: 'START',
+  1: 'FINISH',
+  2: 'ERROR',
+  3: 'REQUEST_LINE',
+  4: 'STATUS_LINE',
+  5: 'HTTP2_PREFACE',
+  6: 'HEADER',
+  7: 'BODY_DECISION',
+  8: 'BODY_VIA_CONTENT_LENGTH',
+  9: 'BODY_WITH_NO_LENGTH',
+  10: 'CHUNK_HEADER',
+  11: 'CHUNK_EXTENSIONS',
+  12: 'CHUNK_DATA',
+  13: 'TRAILER',
+  14: 'TUNNEL'
+})
+
+const ParserFields = Object.freeze({
+  MAX_START_LINE_LENGTH: 0,
+  MAX_HEADER_LENGTH: 4,
+  MAX_BODY_PAYLOAD: 8,
+  AUTODETECT: 16,
+  IS_REQUEST: 17,
+  SUSPEND_AFTER_HEADERS: 18,
+  MANAGE_UNCONSUMED: 19,
+  CONTINUE_WITHOUT_DATA: 20,
+  IS_CONNECT: 21,
+  SKIP_BODY: 22,
+  DEBUG: 23,
+  PARSED: 24,
+  POSITION: 32,
+  STATE: 36,
+  PAUSED: 37,
+  ERROR_CODE: 38,
+  CONTENT_LENGTH: 40,
+  CHUNK_SIZE: 48,
+  REMAINING_CONTENT_LENGTH: 56,
+  REMAINING_CHUNK_SIZE: 64,
+  STATUS: 72,
+  METHOD: 76,
+  HAS_CONTENT_LENGTH: 77,
+  HAS_TRANSFER_ENCODING: 78,
+  HAS_CHUNKED_TRANSFER_ENCODING: 79,
+  HAS_CONNECTION_CLOSE: 80,
+  HAS_CONNECTION_UPGRADE: 81,
+  HAS_UPGRADE: 82,
+  HAS_TRAILERS: 83,
+  ACTIVE_CALLBACKS: 88,
+  ACTIVE_EVENTS: 96,
+  PTR: 104,
+  ERROR_DESCRIPTION: 108,
+  UNCONSUMED: 364,
+  UNCONSUMED_LEN: 368,
+  ERROR_DESCRIPTION_LEN: 372,
+  EVENTS: 376,
+  0: 'MAX_START_LINE_LENGTH',
+  4: 'MAX_HEADER_LENGTH',
+  8: 'MAX_BODY_PAYLOAD',
+  16: 'AUTODETECT',
+  17: 'IS_REQUEST',
+  18: 'SUSPEND_AFTER_HEADERS',
+  19: 'MANAGE_UNCONSUMED',
+  20: 'CONTINUE_WITHOUT_DATA',
+  21: 'IS_CONNECT',
+  22: 'SKIP_BODY',
+  23: 'DEBUG',
+  24: 'PARSED',
+  32: 'POSITION',
+  36: 'STATE',
+  37: 'PAUSED',
+  38: 'ERROR_CODE',
+  40: 'CONTENT_LENGTH',
+  48: 'CHUNK_SIZE',
+  56: 'REMAINING_CONTENT_LENGTH',
+  64: 'REMAINING_CHUNK_SIZE',
+  72: 'STATUS',
+  76: 'METHOD',
+  77: 'HAS_CONTENT_LENGTH',
+  78: 'HAS_TRANSFER_ENCODING',
+  79: 'HAS_CHUNKED_TRANSFER_ENCODING',
+  80: 'HAS_CONNECTION_CLOSE',
+  81: 'HAS_CONNECTION_UPGRADE',
+  82: 'HAS_UPGRADE',
+  83: 'HAS_TRAILERS',
+  88: 'ACTIVE_CALLBACKS',
+  96: 'ACTIVE_EVENTS',
+  104: 'PTR',
+  108: 'ERROR_DESCRIPTION',
+  364: 'UNCONSUMED',
+  368: 'UNCONSUMED_LEN',
+  372: 'ERROR_DESCRIPTION_LEN',
+  376: 'EVENTS'
+})
+
+function isAutodetect (parser) {
+  return this.is_autodetect(parser) !== 0
+}
+
+function isRequest (parser) {
+  return this.is_request(parser) !== 0
+}
+
+function isPaused (parser) {
+  return this.is_paused(parser) !== 0
+}
+
+function shouldManageUnconsumed (parser) {
+  return this.should_manage_unconsumed(parser) !== 0
+}
+
+function shouldSuspendAfterHeaders (parser) {
+  return this.should_suspend_after_headers(parser) !== 0
+}
+
+function getMaxStartLineLength (parser) {
+  return this.get_max_start_line_length(parser) >>> 0
+}
+
+function getMaxHeaderLength (parser) {
+  return this.get_max_header_length(parser) >>> 0
+}
+
+function getMaxBodyPayload (parser) {
+  return BigInt.asUintN(64, this.get_max_body_payload(parser))
+}
+
+function shouldContinueWithoutData (parser) {
+  return this.should_continue_without_data(parser) !== 0
+}
+
+function isConnect (parser) {
+  return this.is_connect(parser) !== 0
+}
+
+function isDebug (parser) {
+  return this.is_debug(parser) !== 0
+}
+
+function shouldSkipBody (parser) {
+  return this.should_skip_body(parser) !== 0
+}
+
+function getState (parser) {
+  return this.get_state(parser) >>> 0
+}
+
+function getPosition (parser) {
+  return this.get_position(parser) >>> 0
+}
+
+function getParsed (parser) {
+  return BigInt.asUintN(64, this.get_parsed(parser))
+}
+
+function getErrorCode (parser) {
+  return this.get_error_code(parser) >>> 0
+}
+
+function getMethod (parser) {
+  return this.get_method(parser) >>> 0
+}
+
+function getStatus (parser) {
+  return this.get_status(parser) >>> 0
+}
+
+function hasConnectionClose (parser) {
+  return this.has_connection_close(parser) !== 0
+}
+
+function hasConnectionUpgrade (parser) {
+  return this.has_connection_upgrade(parser) !== 0
+}
+
+function getContentLength (parser) {
+  return BigInt.asUintN(64, this.get_content_length(parser))
+}
+
+function getChunkSize (parser) {
+  return BigInt.asUintN(64, this.get_chunk_size(parser))
+}
+
+function getRemainingContentLength (parser) {
+  return BigInt.asUintN(64, this.get_remaining_content_length(parser))
+}
+
+function getRemainingChunkSize (parser) {
+  return BigInt.asUintN(64, this.get_remaining_chunk_size(parser))
+}
+
+function hasContentLength (parser) {
+  return this.has_content_length(parser) !== 0
+}
+
+function hasTransferEncoding (parser) {
+  return this.has_transfer_encoding(parser) !== 0
+}
+
+function hasChunkedTransferEncoding (parser) {
+  return this.has_chunked_transfer_encoding(parser) !== 0
+}
+
+function hasUpgrade (parser) {
+  return this.has_upgrade(parser) !== 0
+}
+
+function hasTrailers (parser) {
+  return this.has_trailers(parser) !== 0
+}
+
+function getErrorDescription (parser) {
+  const raw = this.get_error_description_raw(parser)
+  const len = Number(BigInt.asUintN(32, raw))
+  const ptr = Number(raw >> 32n)
+  return textDecoder.decode(new Uint8Array(this.memory.buffer, ptr, len))
+}
+
+function setShouldAutodetect (parser, value) {
+  this.set_should_autodetect(parser, value)
+}
+
+function setShouldContinueWithoutData (parser, value) {
+  this.set_should_continue_without_data(parser, value)
+}
+
+function setIsRequest (parser, value) {
+  this.set_is_request(parser, value)
+}
+
+function setIsConnect (parser, value) {
+  this.set_is_connect(parser, value)
+}
+
+function setDebug (parser, value) {
+  this.set_debug(parser, value)
+}
+
+function setShouldManageUnconsumed (parser, value) {
+  this.set_should_manage_unconsumed(parser, value)
+}
+
+function setShouldSuspendAfterHeaders (parser, value) {
+  this.set_should_suspend_after_headers(parser, value)
+}
+
+function setMaxStartLineLength (parser, value) {
+  this.set_max_start_line_length(parser, value)
+}
+
+function setMaxHeaderLength (parser, value) {
+  this.set_max_header_length(parser, value)
+}
+
+function setMaxBodyPayload (parser, value) {
+  this.set_max_body_payload(parser, value)
+}
+
+function setShouldSkipBody (parser, value) {
+  this.set_should_skip_body(parser, value)
+}
+
+function setActiveCallbacks (parser, value) {
+  this.set_active_callbacks(parser, value)
+}
+
+function setActiveEvents (parser, value) {
+  this.set_active_events(parser, value)
+}
+
+function simpleCreate (spans, create) {
+  const parser = create()
+  spans[parser] = []
+  this.setActiveCallbacks(parser, this.CALLBACK_ACTIVE_ALL)
+  return parser
+}
+
+function simpleDestroy (spans, destroy, parser) {
+  spans[parser] = undefined
+  destroy(parser)
+}
+
+function noop () {}
+
+function setup (env = {}) {
+  let { logger: logOption, ...instanceEnvironment } = env
+  let logger = noop
+  const context = {}
+
+  if (logOption) {
+    if (typeof logOption !== 'function') {
+      logOption = console.log
+    }
+
+    logger = log.bind(context, logOption)
+  }
+
+  // Create the WASM instance
+  /* eslint-disable-next-line no-undef */
+  const instance = new WebAssembly.Instance(wasmModule, {
+    env: {
+      logger,
+      on_error: noop,
+      on_finish: noop,
+      on_message_start: noop,
+      on_message_complete: noop,
+      on_request: noop,
+      on_response: noop,
+      on_reset: noop,
+      on_method: noop,
+      on_url: noop,
+      on_protocol: noop,
+      on_version: noop,
+      on_status: noop,
+      on_reason: noop,
+      on_header_name: noop,
+      on_header_value: noop,
+      on_headers: noop,
+      on_connect: noop,
+      on_upgrade: noop,
+      on_chunk_length: noop,
+      on_chunk_extension_name: noop,
+      on_chunk_extension_value: noop,
+      on_chunk: noop,
+      on_body: noop,
+      on_data: noop,
+      on_trailer_name: noop,
+      on_trailer_value: noop,
+      on_trailers: noop,
+      on_state_change: noop,
+      ...instanceEnvironment
+    }
+  })
+
+  const wasm = instance.exports
+  context.memory = wasm.memory
+
+  const milo = {
+    version: {
+      raw: '0.9.0',
+      major: 0,
+      minor: 9,
+      patch: 0,
+      prerelease: ''
+    },
+    METHOD_OTHER: 0,
+    METHOD_GET: 1,
+    METHOD_HEAD: 2,
+    METHOD_POST: 3,
+    METHOD_PUT: 4,
+    METHOD_DELETE: 5,
+    METHOD_CONNECT: 6,
+    METHOD_OPTIONS: 7,
+    METHOD_TRACE: 8,
+    METHOD_PATCH: 9,
+    METHOD_PRI: 10,
+    CALLBACK_ON_ERROR: 0,
+    CALLBACK_ON_FINISH: 1,
+    CALLBACK_ON_MESSAGE_START: 2,
+    CALLBACK_ON_MESSAGE_COMPLETE: 3,
+    CALLBACK_ON_REQUEST: 4,
+    CALLBACK_ON_RESPONSE: 5,
+    CALLBACK_ON_RESET: 6,
+    CALLBACK_ON_METHOD: 7,
+    CALLBACK_ON_URL: 8,
+    CALLBACK_ON_PROTOCOL: 9,
+    CALLBACK_ON_VERSION: 10,
+    CALLBACK_ON_STATUS: 11,
+    CALLBACK_ON_REASON: 12,
+    CALLBACK_ON_HEADER_NAME: 13,
+    CALLBACK_ON_HEADER_VALUE: 14,
+    CALLBACK_ON_HEADERS: 15,
+    CALLBACK_ON_CONNECT: 16,
+    CALLBACK_ON_UPGRADE: 17,
+    CALLBACK_ON_CHUNK_LENGTH: 18,
+    CALLBACK_ON_CHUNK_EXTENSION_NAME: 19,
+    CALLBACK_ON_CHUNK_EXTENSION_VALUE: 20,
+    CALLBACK_ON_CHUNK: 21,
+    CALLBACK_ON_BODY: 22,
+    CALLBACK_ON_DATA: 23,
+    CALLBACK_ON_TRAILER_NAME: 24,
+    CALLBACK_ON_TRAILER_VALUE: 25,
+    CALLBACK_ON_TRAILERS: 26,
+    CALLBACK_ON_STATE_CHANGE: 27,
+    EVENT_END: 0,
+    EVENT_ERROR: 1,
+    EVENT_FINISH: 2,
+    EVENT_MESSAGE_START: 3,
+    EVENT_MESSAGE_COMPLETE: 4,
+    EVENT_REQUEST: 5,
+    EVENT_RESPONSE: 6,
+    EVENT_RESET: 7,
+    EVENT_METHOD: 8,
+    EVENT_URL: 9,
+    EVENT_PROTOCOL: 10,
+    EVENT_VERSION: 11,
+    EVENT_STATUS: 12,
+    EVENT_REASON: 13,
+    EVENT_HEADER_NAME: 14,
+    EVENT_HEADER_VALUE: 15,
+    EVENT_HEADERS: 16,
+    EVENT_CONNECT: 17,
+    EVENT_UPGRADE: 18,
+    EVENT_CHUNK_LENGTH: 19,
+    EVENT_CHUNK_EXTENSION_NAME: 20,
+    EVENT_CHUNK_EXTENSION_VALUE: 21,
+    EVENT_CHUNK: 22,
+    EVENT_BODY: 23,
+    EVENT_DATA: 24,
+    EVENT_TRAILER_NAME: 25,
+    EVENT_TRAILER_VALUE: 26,
+    EVENT_TRAILERS: 27,
+    EVENT_STATE_CHANGE: 28,
+    CALLBACK_ACTIVE_NONE: 0n,
+    EVENT_ACTIVE_NONE: 0n,
+    CALLBACK_ACTIVE_ON_ERROR: 1n,
+    EVENT_ACTIVE_ON_ERROR: 1n,
+    CALLBACK_ACTIVE_ON_FINISH: 2n,
+    EVENT_ACTIVE_ON_FINISH: 2n,
+    CALLBACK_ACTIVE_ON_MESSAGE_START: 4n,
+    EVENT_ACTIVE_ON_MESSAGE_START: 4n,
+    CALLBACK_ACTIVE_ON_MESSAGE_COMPLETE: 8n,
+    EVENT_ACTIVE_ON_MESSAGE_COMPLETE: 8n,
+    CALLBACK_ACTIVE_ON_REQUEST: 16n,
+    EVENT_ACTIVE_ON_REQUEST: 16n,
+    CALLBACK_ACTIVE_ON_RESPONSE: 32n,
+    EVENT_ACTIVE_ON_RESPONSE: 32n,
+    CALLBACK_ACTIVE_ON_RESET: 64n,
+    EVENT_ACTIVE_ON_RESET: 64n,
+    CALLBACK_ACTIVE_ON_METHOD: 128n,
+    EVENT_ACTIVE_ON_METHOD: 128n,
+    CALLBACK_ACTIVE_ON_URL: 256n,
+    EVENT_ACTIVE_ON_URL: 256n,
+    CALLBACK_ACTIVE_ON_PROTOCOL: 512n,
+    EVENT_ACTIVE_ON_PROTOCOL: 512n,
+    CALLBACK_ACTIVE_ON_VERSION: 1024n,
+    EVENT_ACTIVE_ON_VERSION: 1024n,
+    CALLBACK_ACTIVE_ON_STATUS: 2048n,
+    EVENT_ACTIVE_ON_STATUS: 2048n,
+    CALLBACK_ACTIVE_ON_REASON: 4096n,
+    EVENT_ACTIVE_ON_REASON: 4096n,
+    CALLBACK_ACTIVE_ON_HEADER_NAME: 8192n,
+    EVENT_ACTIVE_ON_HEADER_NAME: 8192n,
+    CALLBACK_ACTIVE_ON_HEADER_VALUE: 16384n,
+    EVENT_ACTIVE_ON_HEADER_VALUE: 16384n,
+    CALLBACK_ACTIVE_ON_HEADERS: 32768n,
+    EVENT_ACTIVE_ON_HEADERS: 32768n,
+    CALLBACK_ACTIVE_ON_CONNECT: 65536n,
+    EVENT_ACTIVE_ON_CONNECT: 65536n,
+    CALLBACK_ACTIVE_ON_UPGRADE: 131072n,
+    EVENT_ACTIVE_ON_UPGRADE: 131072n,
+    CALLBACK_ACTIVE_ON_CHUNK_LENGTH: 262144n,
+    EVENT_ACTIVE_ON_CHUNK_LENGTH: 262144n,
+    CALLBACK_ACTIVE_ON_CHUNK_EXTENSION_NAME: 524288n,
+    EVENT_ACTIVE_ON_CHUNK_EXTENSION_NAME: 524288n,
+    CALLBACK_ACTIVE_ON_CHUNK_EXTENSION_VALUE: 1048576n,
+    EVENT_ACTIVE_ON_CHUNK_EXTENSION_VALUE: 1048576n,
+    CALLBACK_ACTIVE_ON_CHUNK: 2097152n,
+    EVENT_ACTIVE_ON_CHUNK: 2097152n,
+    CALLBACK_ACTIVE_ON_BODY: 4194304n,
+    EVENT_ACTIVE_ON_BODY: 4194304n,
+    CALLBACK_ACTIVE_ON_DATA: 8388608n,
+    EVENT_ACTIVE_ON_DATA: 8388608n,
+    CALLBACK_ACTIVE_ON_TRAILER_NAME: 16777216n,
+    EVENT_ACTIVE_ON_TRAILER_NAME: 16777216n,
+    CALLBACK_ACTIVE_ON_TRAILER_VALUE: 33554432n,
+    EVENT_ACTIVE_ON_TRAILER_VALUE: 33554432n,
+    CALLBACK_ACTIVE_ON_TRAILERS: 67108864n,
+    EVENT_ACTIVE_ON_TRAILERS: 67108864n,
+    CALLBACK_ACTIVE_ON_STATE_CHANGE: 134217728n,
+    EVENT_ACTIVE_ON_STATE_CHANGE: 134217728n,
+    CALLBACK_ACTIVE_ALL: 268435455n,
+    EVENT_ACTIVE_ALL: 268435455n,
+    ERROR_NONE: 0,
+    ERROR_USER: 1,
+    ERROR_CALLBACK_ERROR: 2,
+    ERROR_UNEXPECTED_STATE: 3,
+    ERROR_UNEXPECTED_DATA: 4,
+    ERROR_UNEXPECTED_EOF: 5,
+    ERROR_UNEXPECTED_CHARACTER: 6,
+    ERROR_UNEXPECTED_CONTENT_LENGTH: 7,
+    ERROR_UNEXPECTED_TRANSFER_ENCODING: 8,
+    ERROR_UNEXPECTED_CONTENT: 9,
+    ERROR_UNEXPECTED_TRAILERS: 10,
+    ERROR_INVALID_VERSION: 11,
+    ERROR_INVALID_STATUS: 12,
+    ERROR_INVALID_CONTENT_LENGTH: 13,
+    ERROR_INVALID_TRANSFER_ENCODING: 14,
+    ERROR_INVALID_CHUNK_SIZE: 15,
+    ERROR_MISSING_CONNECTION_UPGRADE: 16,
+    ERROR_UNSUPPORTED_HTTP_VERSION: 17,
+    STATE_START: 0,
+    STATE_FINISH: 1,
+    STATE_ERROR: 2,
+    STATE_REQUEST_LINE: 3,
+    STATE_STATUS_LINE: 4,
+    STATE_HTTP2_PREFACE: 5,
+    STATE_HEADER: 6,
+    STATE_BODY_DECISION: 7,
+    STATE_BODY_VIA_CONTENT_LENGTH: 8,
+    STATE_BODY_WITH_NO_LENGTH: 9,
+    STATE_CHUNK_HEADER: 10,
+    STATE_CHUNK_EXTENSIONS: 11,
+    STATE_CHUNK_DATA: 12,
+    STATE_TRAILER: 13,
+    STATE_TUNNEL: 14,
+    PARSER_FIELD_MAX_START_LINE_LENGTH: 0,
+    PARSER_FIELD_MAX_HEADER_LENGTH: 4,
+    PARSER_FIELD_MAX_BODY_PAYLOAD: 8,
+    PARSER_FIELD_AUTODETECT: 16,
+    PARSER_FIELD_IS_REQUEST: 17,
+    PARSER_FIELD_SUSPEND_AFTER_HEADERS: 18,
+    PARSER_FIELD_MANAGE_UNCONSUMED: 19,
+    PARSER_FIELD_CONTINUE_WITHOUT_DATA: 20,
+    PARSER_FIELD_IS_CONNECT: 21,
+    PARSER_FIELD_SKIP_BODY: 22,
+    PARSER_FIELD_DEBUG: 23,
+    PARSER_FIELD_PARSED: 24,
+    PARSER_FIELD_POSITION: 32,
+    PARSER_FIELD_STATE: 36,
+    PARSER_FIELD_PAUSED: 37,
+    PARSER_FIELD_ERROR_CODE: 38,
+    PARSER_FIELD_CONTENT_LENGTH: 40,
+    PARSER_FIELD_CHUNK_SIZE: 48,
+    PARSER_FIELD_REMAINING_CONTENT_LENGTH: 56,
+    PARSER_FIELD_REMAINING_CHUNK_SIZE: 64,
+    PARSER_FIELD_STATUS: 72,
+    PARSER_FIELD_METHOD: 76,
+    PARSER_FIELD_HAS_CONTENT_LENGTH: 77,
+    PARSER_FIELD_HAS_TRANSFER_ENCODING: 78,
+    PARSER_FIELD_HAS_CHUNKED_TRANSFER_ENCODING: 79,
+    PARSER_FIELD_HAS_CONNECTION_CLOSE: 80,
+    PARSER_FIELD_HAS_CONNECTION_UPGRADE: 81,
+    PARSER_FIELD_HAS_UPGRADE: 82,
+    PARSER_FIELD_HAS_TRAILERS: 83,
+    PARSER_FIELD_ACTIVE_CALLBACKS: 88,
+    PARSER_FIELD_ACTIVE_EVENTS: 96,
+    PARSER_FIELD_PTR: 104,
+    PARSER_FIELD_ERROR_DESCRIPTION: 108,
+    PARSER_FIELD_UNCONSUMED: 364,
+    PARSER_FIELD_UNCONSUMED_LEN: 368,
+    PARSER_FIELD_ERROR_DESCRIPTION_LEN: 372,
+    PARSER_FIELD_EVENTS: 376,
+    Errors,
+    Methods,
+    Callbacks,
+    CallbackActives,
+    Events,
+    EventActives,
+    States,
+    ParserFields,
+    isAutodetect: isAutodetect.bind(wasm),
+    isRequest: isRequest.bind(wasm),
+    isPaused: isPaused.bind(wasm),
+    shouldManageUnconsumed: shouldManageUnconsumed.bind(wasm),
+    shouldSuspendAfterHeaders: shouldSuspendAfterHeaders.bind(wasm),
+    getMaxStartLineLength: getMaxStartLineLength.bind(wasm),
+    getMaxHeaderLength: getMaxHeaderLength.bind(wasm),
+    getMaxBodyPayload: getMaxBodyPayload.bind(wasm),
+    shouldContinueWithoutData: shouldContinueWithoutData.bind(wasm),
+    isConnect: isConnect.bind(wasm),
+    isDebug: isDebug.bind(wasm),
+    shouldSkipBody: shouldSkipBody.bind(wasm),
+    getState: getState.bind(wasm),
+    getPosition: getPosition.bind(wasm),
+    getParsed: getParsed.bind(wasm),
+    getErrorCode: getErrorCode.bind(wasm),
+    getMethod: getMethod.bind(wasm),
+    getStatus: getStatus.bind(wasm),
+    hasConnectionClose: hasConnectionClose.bind(wasm),
+    hasConnectionUpgrade: hasConnectionUpgrade.bind(wasm),
+    getContentLength: getContentLength.bind(wasm),
+    getChunkSize: getChunkSize.bind(wasm),
+    getRemainingContentLength: getRemainingContentLength.bind(wasm),
+    getRemainingChunkSize: getRemainingChunkSize.bind(wasm),
+    hasContentLength: hasContentLength.bind(wasm),
+    hasTransferEncoding: hasTransferEncoding.bind(wasm),
+    hasChunkedTransferEncoding: hasChunkedTransferEncoding.bind(wasm),
+    hasUpgrade: hasUpgrade.bind(wasm),
+    hasTrailers: hasTrailers.bind(wasm),
+    getErrorDescription: getErrorDescription.bind(wasm),
+    setShouldAutodetect: setShouldAutodetect.bind(wasm),
+    setShouldContinueWithoutData: setShouldContinueWithoutData.bind(wasm),
+    setIsRequest: setIsRequest.bind(wasm),
+    setIsConnect: setIsConnect.bind(wasm),
+    setDebug: setDebug.bind(wasm),
+    setShouldManageUnconsumed: setShouldManageUnconsumed.bind(wasm),
+    setShouldSuspendAfterHeaders: setShouldSuspendAfterHeaders.bind(wasm),
+    setMaxStartLineLength: setMaxStartLineLength.bind(wasm),
+    setMaxHeaderLength: setMaxHeaderLength.bind(wasm),
+    setMaxBodyPayload: setMaxBodyPayload.bind(wasm),
+    setShouldSkipBody: setShouldSkipBody.bind(wasm),
+    setActiveCallbacks: setActiveCallbacks.bind(wasm),
+    setActiveEvents: setActiveEvents.bind(wasm),
+    memory: wasm.memory,
+    alloc: alloc.bind(wasm),
+    dealloc: dealloc.bind(wasm),
+    create: create.bind(wasm),
+    destroy: destroy.bind(wasm),
+    parse: parse.bind(wasm),
+    fail: fail.bind(wasm),
+    hasDebug: hasDebug.bind(wasm),
+    clear: wasm.clear,
+    complete: wasm.complete,
+    finish: wasm.finish,
+    pause: wasm.pause,
+    reset: wasm.reset,
+    resume: wasm.resume
+  }
+
+  return milo
+}
+
+function simple () {
+  const spans = {}
+
+  const milo = setup({/* REPLACE: callbacks:simple */})
+
+  milo.spans = spans
+  milo.create = simpleCreate.bind(milo, spans, milo.create)
+  milo.destroy = simpleDestroy.bind(milo, spans, milo.destroy)
+
+  return milo
+}
+
+module.exports = { wasmModule, noop, setup, simple }
+
+
+/***/ }),
+
+/***/ 4377:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { kClients } = __nccwpck_require__(9087)
-const Agent = __nccwpck_require__(1361)
+const { kClients } = __nccwpck_require__(3599)
+const Agent = __nccwpck_require__(3857)
 const {
   kAgent,
   kMockAgentSet,
@@ -28898,14 +32638,14 @@ const {
   kMockAgentAcceptsNonStandardSearchParameters,
   kMockCallHistoryAddLog,
   kIgnoreTrailingSlash
-} = __nccwpck_require__(1185)
-const MockClient = __nccwpck_require__(4505)
-const MockPool = __nccwpck_require__(7504)
-const { matchValue, normalizeSearchParams, buildAndValidateMockOptions, normalizeOrigin } = __nccwpck_require__(8889)
-const { InvalidArgumentError, UndiciError } = __nccwpck_require__(39)
-const Dispatcher = __nccwpck_require__(1319)
-const PendingInterceptorsFormatter = __nccwpck_require__(8362)
-const { MockCallHistory } = __nccwpck_require__(7819)
+} = __nccwpck_require__(721)
+const MockClient = __nccwpck_require__(5081)
+const MockPool = __nccwpck_require__(5584)
+const { matchValue, normalizeSearchParams, buildAndValidateMockOptions, normalizeOrigin } = __nccwpck_require__(2665)
+const { InvalidArgumentError, UndiciError } = __nccwpck_require__(5767)
+const Dispatcher = __nccwpck_require__(4727)
+const PendingInterceptorsFormatter = __nccwpck_require__(3370)
+const { MockCallHistory } = __nccwpck_require__(5307)
 
 class MockAgent extends Dispatcher {
   constructor (opts = {}) {
@@ -28934,6 +32674,17 @@ class MockAgent extends Dispatcher {
     }
   }
 
+  // WebSocket and EventSource read their receive limits from the dispatcher
+  // they are given, so report the settings of the agent that makes real
+  // connections.
+  get webSocketOptions () {
+    return this[kAgent].webSocketOptions
+  }
+
+  get eventSourceOptions () {
+    return this[kAgent].eventSourceOptions
+  }
+
   get (origin) {
     // Normalize origin to handle URL objects and case-insensitive hostnames
     const normalizedOrigin = normalizeOrigin(origin)
@@ -28952,13 +32703,25 @@ class MockAgent extends Dispatcher {
     opts.origin = normalizeOrigin(opts.origin)
 
     // Call MockAgent.get to perform additional setup before dispatching as normal
-    this.get(opts.origin)
+    const mockDispatcher = this.get(opts.origin)
 
     this[kMockAgentAddCallHistoryLog](opts)
 
     const acceptNonStandardSearchParameters = this[kMockAgentAcceptsNonStandardSearchParameters]
 
     const dispatchOpts = { ...opts }
+
+    // Agent keeps HTTP/1.1-only dispatchers under a separate key. Legacy
+    // global dispatcher consumers use that path, so mirror the mock dispatches
+    // before delegating to the internal Agent.
+    if (dispatchOpts.allowH2 === false) {
+      const http1OnlyKey = `${dispatchOpts.origin}#http1-only`
+      if (!this[kClients].has(http1OnlyKey)) {
+        const http1OnlyDispatcher = this[kFactory](dispatchOpts.origin)
+        http1OnlyDispatcher[kDispatches] = mockDispatcher[kDispatches]
+        this[kMockAgentSet](http1OnlyKey, http1OnlyDispatcher)
+      }
+    }
 
     if (acceptNonStandardSearchParameters && dispatchOpts.path) {
       const [path, searchParams] = dispatchOpts.path.split('?')
@@ -29113,14 +32876,14 @@ module.exports = MockAgent
 
 /***/ }),
 
-/***/ 7819:
+/***/ 5307:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { kMockCallHistoryAddLog } = __nccwpck_require__(1185)
-const { InvalidArgumentError } = __nccwpck_require__(39)
+const { kMockCallHistoryAddLog } = __nccwpck_require__(721)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
 
 function handleFilterCallsWithOptions (criteria, options, handler, store, allLogs) {
   switch (options.operator) {
@@ -29369,15 +33132,15 @@ module.exports.MockCallHistoryLog = MockCallHistoryLog
 
 /***/ }),
 
-/***/ 4505:
+/***/ 5081:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { promisify } = __nccwpck_require__(7975)
-const Client = __nccwpck_require__(3681)
-const { buildMockDispatch } = __nccwpck_require__(8889)
+const Client = __nccwpck_require__(7057)
+const { buildMockDispatch } = __nccwpck_require__(2665)
 const {
   kDispatches,
   kMockAgent,
@@ -29387,10 +33150,10 @@ const {
   kOriginalDispatch,
   kConnected,
   kIgnoreTrailingSlash
-} = __nccwpck_require__(1185)
-const { MockInterceptor } = __nccwpck_require__(451)
-const Symbols = __nccwpck_require__(9087)
-const { InvalidArgumentError } = __nccwpck_require__(39)
+} = __nccwpck_require__(721)
+const { MockInterceptor } = __nccwpck_require__(4051)
+const Symbols = __nccwpck_require__(3599)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
 
 /**
  * MockClient provides an API that extends the Client to influence the mockDispatches.
@@ -29445,13 +33208,13 @@ module.exports = MockClient
 
 /***/ }),
 
-/***/ 4737:
+/***/ 17:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { UndiciError } = __nccwpck_require__(39)
+const { UndiciError } = __nccwpck_require__(5767)
 
 const kMockNotMatchedError = Symbol.for('undici.error.UND_MOCK_ERR_MOCK_NOT_MATCHED')
 
@@ -29482,13 +33245,13 @@ module.exports = {
 
 /***/ }),
 
-/***/ 451:
+/***/ 4051:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { getResponseData, buildKey, addMockDispatch } = __nccwpck_require__(8889)
+const { getResponseData, buildKey, addMockDispatch } = __nccwpck_require__(2665)
 const {
   kDispatches,
   kDispatchKey,
@@ -29497,9 +33260,9 @@ const {
   kContentLength,
   kMockDispatch,
   kIgnoreTrailingSlash
-} = __nccwpck_require__(1185)
-const { InvalidArgumentError } = __nccwpck_require__(39)
-const { serializePathWithQuery } = __nccwpck_require__(4108)
+} = __nccwpck_require__(721)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
+const { serializePathWithQuery } = __nccwpck_require__(6364)
 const {
   types: {
     isPromise
@@ -29717,15 +33480,15 @@ module.exports.MockScope = MockScope
 
 /***/ }),
 
-/***/ 7504:
+/***/ 5584:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { promisify } = __nccwpck_require__(7975)
-const Pool = __nccwpck_require__(2472)
-const { buildMockDispatch } = __nccwpck_require__(8889)
+const Pool = __nccwpck_require__(5704)
+const { buildMockDispatch } = __nccwpck_require__(2665)
 const {
   kDispatches,
   kMockAgent,
@@ -29735,10 +33498,10 @@ const {
   kOriginalDispatch,
   kConnected,
   kIgnoreTrailingSlash
-} = __nccwpck_require__(1185)
-const { MockInterceptor } = __nccwpck_require__(451)
-const Symbols = __nccwpck_require__(9087)
-const { InvalidArgumentError } = __nccwpck_require__(39)
+} = __nccwpck_require__(721)
+const { MockInterceptor } = __nccwpck_require__(4051)
+const Symbols = __nccwpck_require__(3599)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
 
 /**
  * MockPool provides an API that extends the Pool to influence the mockDispatches.
@@ -29793,7 +33556,7 @@ module.exports = MockPool
 
 /***/ }),
 
-/***/ 1185:
+/***/ 721:
 /***/ ((module) => {
 
 "use strict";
@@ -29833,13 +33596,13 @@ module.exports = {
 
 /***/ }),
 
-/***/ 8889:
+/***/ 2665:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { MockNotMatchedError } = __nccwpck_require__(4737)
+const { MockNotMatchedError } = __nccwpck_require__(17)
 const {
   kDispatches,
   kMockAgent,
@@ -29847,15 +33610,15 @@ const {
   kOrigin,
   kGetNetConnect,
   kTotalDispatchCount
-} = __nccwpck_require__(1185)
-const { serializePathWithQuery, parseHeaders } = __nccwpck_require__(4108)
+} = __nccwpck_require__(721)
+const { serializePathWithQuery, parseHeaders } = __nccwpck_require__(6364)
 const { STATUS_CODES } = __nccwpck_require__(7067)
 const {
   types: {
     isPromise
   }
 } = __nccwpck_require__(7975)
-const { InvalidArgumentError } = __nccwpck_require__(39)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
 const requestAborted = Symbol('request aborted')
 
 function matchValue (match, value) {
@@ -30172,8 +33935,7 @@ function mockDispatch (opts, handler) {
             handler.onResponseError(null, new InvalidArgumentError('reply options callback must return an object'))
             return
           }
-          mockDispatch.data = { ...responseDefaults, ...resolvedData }
-          dispatchMockReply(mockDispatches, mockDispatch, key, opts, handler)
+          dispatchMockReply(mockDispatches, mockDispatch, key, opts, handler, { ...responseDefaults, ...resolvedData })
         },
         (error) => {
           handler.onResponseError(null, error)
@@ -30186,7 +33948,7 @@ function mockDispatch (opts, handler) {
       throw new InvalidArgumentError('reply options callback must return an object')
     }
 
-    mockDispatch.data = { ...responseDefaults, ...callbackResult }
+    return dispatchMockReply(mockDispatches, mockDispatch, key, opts, handler, { ...responseDefaults, ...callbackResult })
   }
 
   return dispatchMockReply(mockDispatches, mockDispatch, key, opts, handler)
@@ -30195,9 +33957,13 @@ function mockDispatch (opts, handler) {
 /**
  * Replies to a request once the mock dispatch data is fully resolved
  */
-function dispatchMockReply (mockDispatches, mockDispatch, key, opts, handler) {
-  // Parse mockDispatch data
-  const { data: response, delay } = mockDispatch
+function dispatchMockReply (mockDispatches, mockDispatch, key, opts, handler, resolvedResponse) {
+  // Parse mockDispatch data. When a reply callback has already been resolved
+  // in mockDispatch() (i.e. no body lifecycle hooks are involved), the resolved
+  // response is passed in here, leaving mockDispatch.data untouched so the
+  // callback can be re-invoked for persistent / times() replies.
+  const { data: responseData, delay } = mockDispatch
+  const response = resolvedResponse ?? responseData
 
   // If specified, trigger dispatch error
   if (response.error !== null) {
@@ -30293,8 +34059,7 @@ function dispatchMockReply (mockDispatches, mockDispatch, key, opts, handler) {
               handler.onResponseError(null, new InvalidArgumentError('reply options callback must return an object'))
               return
             }
-            mockDispatch.data = { ...responseDefaults, ...resolvedData }
-            handleReply(dispatches, mockDispatch.data)
+            handleReply(dispatches, { ...responseDefaults, ...resolvedData })
           },
           (err) => {
             handler.onResponseError(null, err)
@@ -30307,8 +34072,7 @@ function dispatchMockReply (mockDispatches, mockDispatch, key, opts, handler) {
         throw new InvalidArgumentError('reply options callback must return an object')
       }
 
-      mockDispatch.data = { ...responseDefaults, ...callbackResult }
-      handleReply(dispatches, mockDispatch.data)
+      handleReply(dispatches, { ...responseDefaults, ...callbackResult })
       return
     }
 
@@ -30560,7 +34324,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 8362:
+/***/ 3370:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -30611,18 +34375,18 @@ module.exports = class PendingInterceptorsFormatter {
 
 /***/ }),
 
-/***/ 7147:
+/***/ 9448:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const Agent = __nccwpck_require__(1361)
-const MockAgent = __nccwpck_require__(6905)
-const { SnapshotRecorder } = __nccwpck_require__(4690)
-const { InvalidArgumentError, UndiciError } = __nccwpck_require__(39)
-const util = __nccwpck_require__(4108)
-const { validateSnapshotMode } = __nccwpck_require__(7023)
+const Agent = __nccwpck_require__(3857)
+const MockAgent = __nccwpck_require__(4377)
+const { SnapshotRecorder } = __nccwpck_require__(7314)
+const { InvalidArgumentError, UndiciError } = __nccwpck_require__(5767)
+const util = __nccwpck_require__(6364)
+const { validateSnapshotMode } = __nccwpck_require__(7567)
 
 const kSnapshotRecorder = Symbol('kSnapshotRecorder')
 const kSnapshotMode = Symbol('kSnapshotMode')
@@ -30990,7 +34754,7 @@ module.exports = SnapshotAgent
 
 /***/ }),
 
-/***/ 4690:
+/***/ 7314:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -30999,8 +34763,9 @@ module.exports = SnapshotAgent
 const { writeFile, readFile, mkdir } = __nccwpck_require__(1455)
 const { dirname, resolve } = __nccwpck_require__(6760)
 const { setTimeout, clearTimeout } = __nccwpck_require__(7997)
-const { InvalidArgumentError, UndiciError } = __nccwpck_require__(39)
-const { hashId, isUrlExcludedFactory, normalizeHeaders, createHeaderFilters } = __nccwpck_require__(7023)
+const { InvalidArgumentError, UndiciError } = __nccwpck_require__(5767)
+const { setHeader } = __nccwpck_require__(6364)
+const { hashId, isUrlExcludedFactory, normalizeHeaders, createHeaderFilters } = __nccwpck_require__(7567)
 
 /**
  * @typedef {Object} SnapshotRequestOptions
@@ -31165,7 +34930,7 @@ function filterHeadersForMatching (headers, headerFilters, matchOptions = {}) {
       if (!match.has(headerKey)) continue
     }
 
-    filtered[headerKey] = value
+    setHeader(filtered, headerKey, value)
   }
 
   return filtered
@@ -31194,7 +34959,7 @@ function filterHeadersForStorage (headers, headerFilters, matchOptions = {}) {
     // Skip if in exclude list (for security)
     if (excludeSet.has(headerKey)) continue
 
-    filtered[headerKey] = value
+    setHeader(filtered, headerKey, value)
   }
 
   return filtered
@@ -31621,14 +35386,15 @@ module.exports = { SnapshotRecorder, formatRequestKey, createRequestHash, filter
 
 /***/ }),
 
-/***/ 7023:
+/***/ 7567:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { InvalidArgumentError } = __nccwpck_require__(39)
-const { runtimeFeatures } = __nccwpck_require__(8045)
+const { InvalidArgumentError } = __nccwpck_require__(5767)
+const { setHeader } = __nccwpck_require__(6364)
+const { runtimeFeatures } = __nccwpck_require__(9021)
 
 /**
  * @typedef {Object} HeaderFilters
@@ -31743,7 +35509,7 @@ function normalizeHeaders (headers) {
         // Convert Buffers to strings if needed
         const keyStr = Buffer.isBuffer(key) ? key.toString() : key
         const valueStr = Buffer.isBuffer(value) ? value.toString() : value
-        normalizedHeaders[keyStr.toLowerCase()] = valueStr
+        setHeader(normalizedHeaders, keyStr.toLowerCase(), valueStr)
       }
     }
     return normalizedHeaders
@@ -31753,7 +35519,7 @@ function normalizeHeaders (headers) {
   if (headers && typeof headers === 'object') {
     for (const [key, value] of Object.entries(headers)) {
       if (key && typeof key === 'string') {
-        normalizedHeaders[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : String(value)
+        setHeader(normalizedHeaders, key.toLowerCase(), Array.isArray(value) ? value.join(', ') : String(value))
       }
     }
   }
@@ -31787,7 +35553,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 7527:
+/***/ 3831:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -31797,10 +35563,12 @@ const {
   safeHTTPMethods,
   pathHasQueryOrFragment,
   hasSafeIterator,
-  isValidHTTPToken
-} = __nccwpck_require__(4108)
+  isValidHTTPToken,
+  setHeader
+} = __nccwpck_require__(6364)
 
-const { serializePathWithQuery } = __nccwpck_require__(4108)
+const { serializePathWithQuery } = __nccwpck_require__(6364)
+const { kRequestOrigin } = __nccwpck_require__(3599)
 
 const MAX_DELTA_SECONDS = 2147483647
 const RESTRICTIVE_DIRECTIVE_NAMES = ['no-store', 'private', 'no-cache']
@@ -31940,8 +35708,47 @@ function getMalformedRestrictiveDirectiveName (key) {
 /**
  * @param {import('../../types/dispatcher.d.ts').default.DispatchOptions} opts
  */
-function makeCacheKey (opts) {
-  const origin = opts.origin ? opts.origin.toString() : ''
+function getRequestOrigin (opts) {
+  const origin = opts[kRequestOrigin] === undefined
+    ? opts.origin
+    : opts[kRequestOrigin]
+  return typeof origin === 'string' || origin instanceof URL
+    ? origin
+    : null
+}
+
+/**
+ * @param {import('../../types/dispatcher.d.ts').default.DispatchOptions} opts
+ * @param {string|null|undefined} interceptorOrigin
+ */
+function getInterceptorOrigin (opts, interceptorOrigin) {
+  const requestOrigin = getRequestOrigin(opts)
+  if (interceptorOrigin === undefined) {
+    return requestOrigin
+  }
+  if (interceptorOrigin === null) {
+    return null
+  }
+  if (requestOrigin) {
+    try {
+      if (new URL(requestOrigin).origin !== interceptorOrigin) {
+        return null
+      }
+    } catch {
+      return interceptorOrigin
+    }
+  }
+  return interceptorOrigin
+}
+
+/**
+ * @param {import('../../types/dispatcher.d.ts').default.DispatchOptions} opts
+ * @param {string|URL|null} [origin]
+ */
+function makeCacheKey (opts, origin = getRequestOrigin(opts)) {
+  if (!origin) {
+    throw new Error('opts.origin is undefined')
+  }
 
   let fullPath = opts.path || '/'
 
@@ -31950,7 +35757,7 @@ function makeCacheKey (opts) {
   }
 
   return {
-    origin,
+    origin: origin.toString(),
     method: opts.method,
     path: fullPath,
     headers: opts.headers
@@ -31959,15 +35766,20 @@ function makeCacheKey (opts) {
 
 function appendHeader (headers, key, val) {
   const headerName = key.toLowerCase()
-  const current = headers[headerName]
+  // Reading `headers[headerName]` directly would resolve `__proto__` (and any
+  // other inherited name) through the prototype chain rather than report the
+  // header as absent.
+  const current = Object.hasOwn(headers, headerName)
+    ? headers[headerName]
+    : undefined
   const values = Array.isArray(val) ? val : [val]
 
   if (current === undefined) {
-    headers[headerName] = Array.isArray(val) ? val.slice() : val
+    setHeader(headers, headerName, Array.isArray(val) ? val.slice() : val)
   } else if (Array.isArray(current)) {
     current.push(...values)
   } else {
-    headers[headerName] = [current, ...values]
+    setHeader(headers, headerName, [current, ...values])
   }
 }
 
@@ -32485,7 +36297,7 @@ function makeDeduplicationKey (cacheKey, excludeHeaders) {
       if (excludeHeaders?.has(header.toLowerCase())) {
         continue
       }
-      headers[header] = cacheKey.headers[header]
+      setHeader(headers, header, cacheKey.headers[header])
     }
   }
 
@@ -32493,6 +36305,8 @@ function makeDeduplicationKey (cacheKey, excludeHeaders) {
 }
 
 module.exports = {
+  getInterceptorOrigin,
+  getRequestOrigin,
   makeCacheKey,
   normalizeHeaders,
   assertCacheKey,
@@ -32511,7 +36325,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 5041:
+/***/ 5233:
 /***/ ((module) => {
 
 "use strict";
@@ -33189,7 +37003,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 8045:
+/***/ 9021:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -33290,7 +37104,7 @@ module.exports["default"] = instance
 
 /***/ }),
 
-/***/ 6570:
+/***/ 1370:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -33303,7 +37117,7 @@ const {
   kSize,
   kFree,
   kQueued
-} = __nccwpck_require__(9087)
+} = __nccwpck_require__(3599)
 
 class ClientStats {
   constructor (client) {
@@ -33330,7 +37144,7 @@ module.exports = { ClientStats, PoolStats }
 
 /***/ }),
 
-/***/ 9695:
+/***/ 3999:
 /***/ ((module) => {
 
 "use strict";
@@ -33763,7 +37577,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 2062:
+/***/ 2990:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -33771,14 +37585,14 @@ module.exports = {
 
 const assert = __nccwpck_require__(4589)
 
-const { kConstruct } = __nccwpck_require__(9087)
-const { urlEquals, getFieldValues } = __nccwpck_require__(3714)
-const { kEnumerableProperty, isDisturbed } = __nccwpck_require__(4108)
-const { webidl } = __nccwpck_require__(1555)
-const { cloneResponse, fromInnerResponse, getResponseState } = __nccwpck_require__(4263)
-const { Request, fromInnerRequest, getRequestState } = __nccwpck_require__(3123)
-const { fetching } = __nccwpck_require__(2986)
-const { urlIsHttpHttpsScheme, readAllBytes } = __nccwpck_require__(1748)
+const { kConstruct } = __nccwpck_require__(3599)
+const { urlEquals, getFieldValues } = __nccwpck_require__(2002)
+const { kEnumerableProperty, isDisturbed } = __nccwpck_require__(6364)
+const { webidl } = __nccwpck_require__(4483)
+const { cloneResponse, fromInnerResponse, getResponseState } = __nccwpck_require__(3751)
+const { Request, fromInnerRequest, getRequestState } = __nccwpck_require__(355)
+const { fetching } = __nccwpck_require__(5498)
+const { urlIsHttpHttpsScheme, readAllBytes } = __nccwpck_require__(676)
 /**
  * @see https://w3c.github.io/ServiceWorker/#dfn-cache-batch-operation
  * @typedef {Object} CacheBatchOperation
@@ -33810,7 +37624,7 @@ class Cache {
   }
 
   async match (request, options = {}) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.match'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -33828,7 +37642,7 @@ class Cache {
   }
 
   async matchAll (request = undefined, options = {}) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.matchAll'
     if (request !== undefined) request = webidl.converters.RequestInfo(request)
@@ -33838,7 +37652,7 @@ class Cache {
   }
 
   async add (request) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.add'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -33856,7 +37670,7 @@ class Cache {
   }
 
   async addAll (requests) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.addAll'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -33954,7 +37768,10 @@ class Cache {
             }
           }
         },
-        processResponseEndOfBody (response) {
+        // Possible spec bug. If the body is never read, `processResponseEndOfBody` (which is attached to a TransformStream's flush hook)
+        // never runs, so this would hang. This hook, on the other hand, always reads the body.
+        // https://github.com/nodejs/undici/issues/5615
+        processResponseConsumeBody (response) {
           // 1.
           if (response.aborted) {
             responsePromise.reject(new DOMException('aborted', 'AbortError'))
@@ -34026,7 +37843,7 @@ class Cache {
   }
 
   async put (request, response) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.put'
     webidl.argumentLengthCheck(arguments, 2, prefix)
@@ -34157,7 +37974,7 @@ class Cache {
   }
 
   async delete (request, options = {}) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.delete'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -34223,7 +38040,7 @@ class Cache {
    * @returns {Promise<readonly Request[]>}
    */
   async keys (request = undefined, options = {}) {
-    webidl.brandCheck(this, Cache)
+    webidl.brandCheck(this, webidl.is.Cache)
 
     const prefix = 'Cache.keys'
 
@@ -34573,6 +38390,12 @@ class Cache {
     // 6.
     return Object.freeze(responseList)
   }
+
+  static {
+    webidl.is.Cache = (arg) => {
+      return arg != null && typeof arg === 'object' && #relevantRequestResponseList in arg
+    }
+  }
 }
 
 Object.defineProperties(Cache.prototype, {
@@ -34633,16 +38456,16 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1633:
+/***/ 2177:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { Cache } = __nccwpck_require__(2062)
-const { webidl } = __nccwpck_require__(1555)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
-const { kConstruct } = __nccwpck_require__(9087)
+const { Cache } = __nccwpck_require__(2990)
+const { webidl } = __nccwpck_require__(4483)
+const { kEnumerableProperty } = __nccwpck_require__(6364)
+const { kConstruct } = __nccwpck_require__(3599)
 
 class CacheStorage {
   /**
@@ -34660,7 +38483,7 @@ class CacheStorage {
   }
 
   async match (request, options = {}) {
-    webidl.brandCheck(this, CacheStorage)
+    webidl.brandCheck(this, webidl.is.CacheStorage)
     webidl.argumentLengthCheck(arguments, 1, 'CacheStorage.match')
 
     request = webidl.converters.RequestInfo(request)
@@ -34697,7 +38520,7 @@ class CacheStorage {
    * @returns {Promise<boolean>}
    */
   async has (cacheName) {
-    webidl.brandCheck(this, CacheStorage)
+    webidl.brandCheck(this, webidl.is.CacheStorage)
 
     const prefix = 'CacheStorage.has'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -34715,7 +38538,7 @@ class CacheStorage {
    * @returns {Promise<Cache>}
    */
   async open (cacheName) {
-    webidl.brandCheck(this, CacheStorage)
+    webidl.brandCheck(this, webidl.is.CacheStorage)
 
     const prefix = 'CacheStorage.open'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -34749,7 +38572,7 @@ class CacheStorage {
    * @returns {Promise<boolean>}
    */
   async delete (cacheName) {
-    webidl.brandCheck(this, CacheStorage)
+    webidl.brandCheck(this, webidl.is.CacheStorage)
 
     const prefix = 'CacheStorage.delete'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -34764,13 +38587,19 @@ class CacheStorage {
    * @returns {Promise<string[]>}
    */
   async keys () {
-    webidl.brandCheck(this, CacheStorage)
+    webidl.brandCheck(this, webidl.is.CacheStorage)
 
     // 2.1
     const keys = this.#caches.keys()
 
     // 2.2
     return [...keys]
+  }
+
+  static {
+    webidl.is.CacheStorage = (arg) => {
+      return arg != null && typeof arg === 'object' && #caches in arg
+    }
   }
 }
 
@@ -34793,15 +38622,15 @@ module.exports = {
 
 /***/ }),
 
-/***/ 3714:
+/***/ 2002:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const assert = __nccwpck_require__(4589)
-const { URLSerializer } = __nccwpck_require__(3200)
-const { isValidHeaderName } = __nccwpck_require__(1748)
+const { URLSerializer } = __nccwpck_require__(8400)
+const { isValidHeaderName } = __nccwpck_require__(676)
 
 /**
  * @see https://url.spec.whatwg.org/#concept-url-equals
@@ -34846,7 +38675,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 56:
+/***/ 5528:
 /***/ ((module) => {
 
 "use strict";
@@ -34866,18 +38695,28 @@ module.exports = {
 
 /***/ }),
 
-/***/ 3537:
+/***/ 2065:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { parseSetCookie } = __nccwpck_require__(4038)
-const { stringify } = __nccwpck_require__(9769)
-const { webidl } = __nccwpck_require__(1555)
-const { Headers } = __nccwpck_require__(912)
+const { parseSetCookie } = __nccwpck_require__(8422)
+const { stringify } = __nccwpck_require__(8009)
+const { webidl } = __nccwpck_require__(4483)
 
-const brandChecks = webidl.brandCheckMultiple([Headers, globalThis.Headers].filter(Boolean))
+const globalHeadersBrandCheck = (arg) => webidl.brandCheck(arg, webidl.util.MakeTypeAssertion(globalThis.Headers))
+const undiciHeadersBrandCheck = (arg) => webidl.brandCheck(arg, webidl.is.Headers)
+
+function brandCheckHeaders (arg) {
+  try {
+    undiciHeadersBrandCheck(arg)
+    return
+  } catch {
+  }
+
+  globalHeadersBrandCheck(arg)
+}
 
 /**
  * @typedef {Object} Cookie
@@ -34900,12 +38739,14 @@ const brandChecks = webidl.brandCheckMultiple([Headers, globalThis.Headers].filt
 function getCookies (headers) {
   webidl.argumentLengthCheck(arguments, 1, 'getCookies')
 
-  brandChecks(headers)
+  brandCheckHeaders(headers)
 
   const cookie = headers.get('cookie')
 
+  // A null prototype keeps a cookie named `__proto__` from hitting the
+  // Object.prototype setter, which would silently drop it.
   /** @type {Record<string, string>} */
-  const out = {}
+  const out = { __proto__: null }
 
   if (!cookie) {
     return out
@@ -34927,7 +38768,7 @@ function getCookies (headers) {
  * @returns {void}
  */
 function deleteCookie (headers, name, attributes) {
-  brandChecks(headers)
+  brandCheckHeaders(headers)
 
   const prefix = 'deleteCookie'
   webidl.argumentLengthCheck(arguments, 2, prefix)
@@ -34952,7 +38793,7 @@ function deleteCookie (headers, name, attributes) {
 function getSetCookies (headers) {
   webidl.argumentLengthCheck(arguments, 1, 'getSetCookies')
 
-  brandChecks(headers)
+  brandCheckHeaders(headers)
 
   const cookies = headers.getSetCookie()
 
@@ -34981,7 +38822,7 @@ function parseCookie (cookie) {
 function setCookie (headers, cookie) {
   webidl.argumentLengthCheck(arguments, 2, 'setCookie')
 
-  brandChecks(headers)
+  brandCheckHeaders(headers)
 
   cookie = webidl.converters.Cookie(cookie)
 
@@ -35073,15 +38914,15 @@ module.exports = {
 
 /***/ }),
 
-/***/ 4038:
+/***/ 8422:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { collectASequenceOfCodePointsFast } = __nccwpck_require__(7208)
-const { maxNameValuePairSize, maxAttributeValueSize } = __nccwpck_require__(56)
-const { isCTLExcludingHtab } = __nccwpck_require__(9769)
+const { collectASequenceOfCodePointsFast } = __nccwpck_require__(1720)
+const { maxNameValuePairSize, maxAttributeValueSize } = __nccwpck_require__(5528)
+const { isCTLExcludingHtab } = __nccwpck_require__(8009)
 const assert = __nccwpck_require__(4589)
 
 /**
@@ -35171,221 +39012,224 @@ function parseSetCookie (header) {
  * @param {Object.<string, unknown>} [cookieAttributeList={}]
  */
 function parseUnparsedAttributes (unparsedAttributes, cookieAttributeList = {}) {
-  // 1. If the unparsed-attributes string is empty, skip the rest of
-  //    these steps.
-  if (unparsedAttributes.length === 0) {
-    return cookieAttributeList
-  }
+  while (true) {
+    // 1. If the unparsed-attributes string is empty, skip the rest of
+    //    these steps.
+    if (unparsedAttributes.length === 0) {
+      return cookieAttributeList
+    }
 
-  // 2. Discard the first character of the unparsed-attributes (which
-  //    will be a %x3B (";") character).
-  assert(unparsedAttributes[0] === ';')
-  unparsedAttributes = unparsedAttributes.slice(1)
+    // 2. Discard the first character of the unparsed-attributes (which
+    //    will be a %x3B (";") character).
+    assert(unparsedAttributes[0] === ';')
+    unparsedAttributes = unparsedAttributes.slice(1)
 
-  let cookieAv = ''
+    let cookieAv = ''
 
-  // 3. If the remaining unparsed-attributes contains a %x3B (";")
-  //    character:
-  if (unparsedAttributes.includes(';')) {
+    // 3. If the remaining unparsed-attributes contains a %x3B (";")
+    //    character:
+    if (unparsedAttributes.includes(';')) {
     // 1. Consume the characters of the unparsed-attributes up to, but
     //    not including, the first %x3B (";") character.
-    cookieAv = collectASequenceOfCodePointsFast(
-      ';',
-      unparsedAttributes,
-      { position: 0 }
-    )
-    unparsedAttributes = unparsedAttributes.slice(cookieAv.length)
-  } else {
+      cookieAv = collectASequenceOfCodePointsFast(
+        ';',
+        unparsedAttributes,
+        { position: 0 }
+      )
+      unparsedAttributes = unparsedAttributes.slice(cookieAv.length)
+    } else {
     // Otherwise:
 
-    // 1. Consume the remainder of the unparsed-attributes.
-    cookieAv = unparsedAttributes
-    unparsedAttributes = ''
-  }
+      // 1. Consume the remainder of the unparsed-attributes.
+      cookieAv = unparsedAttributes
+      unparsedAttributes = ''
+    }
 
-  // Let the cookie-av string be the characters consumed in this step.
+    // Let the cookie-av string be the characters consumed in this step.
 
-  let attributeName = ''
-  let attributeValue = ''
+    let attributeName = ''
+    let attributeValue = ''
 
-  // 4. If the cookie-av string contains a %x3D ("=") character:
-  if (cookieAv.includes('=')) {
+    // 4. If the cookie-av string contains a %x3D ("=") character:
+    if (cookieAv.includes('=')) {
     // 1. The (possibly empty) attribute-name string consists of the
     //    characters up to, but not including, the first %x3D ("=")
     //    character, and the (possibly empty) attribute-value string
     //    consists of the characters after the first %x3D ("=")
     //    character.
-    const position = { position: 0 }
+      const position = { position: 0 }
 
-    attributeName = collectASequenceOfCodePointsFast(
-      '=',
-      cookieAv,
-      position
-    )
-    attributeValue = cookieAv.slice(position.position + 1)
-  } else {
+      attributeName = collectASequenceOfCodePointsFast(
+        '=',
+        cookieAv,
+        position
+      )
+      attributeValue = cookieAv.slice(position.position + 1)
+    } else {
     // Otherwise:
 
-    // 1. The attribute-name string consists of the entire cookie-av
-    //    string, and the attribute-value string is empty.
-    attributeName = cookieAv
-  }
+      // 1. The attribute-name string consists of the entire cookie-av
+      //    string, and the attribute-value string is empty.
+      attributeName = cookieAv
+    }
 
-  // 5. Remove any leading or trailing WSP characters from the attribute-
-  //    name string and the attribute-value string.
-  attributeName = attributeName.trim()
-  attributeValue = attributeValue.trim()
+    // 5. Remove any leading or trailing WSP characters from the attribute-
+    //    name string and the attribute-value string.
+    attributeName = attributeName.trim()
+    attributeValue = attributeValue.trim()
 
-  // 6. If the attribute-value is longer than 1024 octets, ignore the
-  //    cookie-av string and return to Step 1 of this algorithm.
-  if (attributeValue.length > maxAttributeValueSize) {
-    return parseUnparsedAttributes(unparsedAttributes, cookieAttributeList)
-  }
+    // 6. If the attribute-value is longer than 1024 octets, ignore the
+    //    cookie-av string and return to Step 1 of this algorithm.
+    if (attributeValue.length > maxAttributeValueSize) {
+      continue
+    }
 
-  // 7. Process the attribute-name and attribute-value according to the
-  //    requirements in the following subsections.  (Notice that
-  //    attributes with unrecognized attribute-names are ignored.)
-  const attributeNameLowercase = attributeName.toLowerCase()
+    // 7. Process the attribute-name and attribute-value according to the
+    //    requirements in the following subsections.  (Notice that
+    //    attributes with unrecognized attribute-names are ignored.)
+    const attributeNameLowercase = attributeName.toLowerCase()
 
-  // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.1
-  // If the attribute-name case-insensitively matches the string
-  // "Expires", the user agent MUST process the cookie-av as follows.
-  if (attributeNameLowercase === 'expires') {
+    // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.1
+    // If the attribute-name case-insensitively matches the string
+    // "Expires", the user agent MUST process the cookie-av as follows.
+    if (attributeNameLowercase === 'expires') {
     // 1. Let the expiry-time be the result of parsing the attribute-value
     //    as cookie-date (see Section 5.1.1).
-    const expiryTime = new Date(attributeValue)
+      const expiryTime = new Date(attributeValue)
 
-    // 2. If the attribute-value failed to parse as a cookie date, ignore
-    //    the cookie-av.
-    if (!Number.isNaN(expiryTime.getTime())) {
-      cookieAttributeList.expires = expiryTime
-    }
-  } else if (attributeNameLowercase === 'max-age') {
+      // 2. If the attribute-value failed to parse as a cookie date, ignore
+      //    the cookie-av.
+      if (!Number.isNaN(expiryTime.getTime())) {
+        cookieAttributeList.expires = expiryTime
+      }
+    } else if (attributeNameLowercase === 'max-age') {
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.2
     // If the attribute-name case-insensitively matches the string "Max-
     // Age", the user agent MUST process the cookie-av as follows.
 
-    // 1. If the first character of the attribute-value is not a DIGIT or a
-    //    "-" character, ignore the cookie-av.
-    const charCode = attributeValue.charCodeAt(0)
+      // 1. If the first character of the attribute-value is not a DIGIT or a
+      //    "-" character, ignore the cookie-av.
+      const charCode = attributeValue.charCodeAt(0)
+      const startsWithDigit = charCode >= 48 && charCode <= 57
+      const startsWithSignedDigit = attributeValue[0] === '-' && attributeValue.length > 1
 
-    if ((charCode < 48 || charCode > 57) && attributeValue[0] !== '-') {
-      return parseUnparsedAttributes(unparsedAttributes, cookieAttributeList)
-    }
+      if (!startsWithDigit && !startsWithSignedDigit) {
+        continue
+      }
 
-    // 2. If the remainder of attribute-value contains a non-DIGIT
-    //    character, ignore the cookie-av.
-    if (!/^\d+$/.test(attributeValue)) {
-      return parseUnparsedAttributes(unparsedAttributes, cookieAttributeList)
-    }
+      // 2. If the remainder of attribute-value contains a non-DIGIT
+      //    character, ignore the cookie-av.
+      if (/[^\d]/.test(attributeValue.slice(1))) {
+        continue
+      }
 
-    // 3. Let delta-seconds be the attribute-value converted to an integer.
-    const deltaSeconds = Number(attributeValue)
+      // 3. Let delta-seconds be the attribute-value converted to an integer.
+      const deltaSeconds = Number(attributeValue)
 
-    // 4. Let cookie-age-limit be the maximum age of the cookie (which
-    //    SHOULD be 400 days or less, see Section 4.1.2.2).
+      // 4. Let cookie-age-limit be the maximum age of the cookie (which
+      //    SHOULD be 400 days or less, see Section 4.1.2.2).
 
-    // 5. Set delta-seconds to the smaller of its present value and cookie-
-    //    age-limit.
-    // deltaSeconds = Math.min(deltaSeconds * 1000, maxExpiresMs)
+      // 5. Set delta-seconds to the smaller of its present value and cookie-
+      //    age-limit.
+      // deltaSeconds = Math.min(deltaSeconds * 1000, maxExpiresMs)
 
-    // 6. If delta-seconds is less than or equal to zero (0), let expiry-
-    //    time be the earliest representable date and time.  Otherwise, let
-    //    the expiry-time be the current date and time plus delta-seconds
-    //    seconds.
-    // const expiryTime = deltaSeconds <= 0 ? Date.now() : Date.now() + deltaSeconds
+      // 6. If delta-seconds is less than or equal to zero (0), let expiry-
+      //    time be the earliest representable date and time.  Otherwise, let
+      //    the expiry-time be the current date and time plus delta-seconds
+      //    seconds.
+      // const expiryTime = deltaSeconds <= 0 ? Date.now() : Date.now() + deltaSeconds
 
-    // 7. Append an attribute to the cookie-attribute-list with an
-    //    attribute-name of Max-Age and an attribute-value of expiry-time.
-    cookieAttributeList.maxAge = deltaSeconds
-  } else if (attributeNameLowercase === 'domain') {
+      // 7. Append an attribute to the cookie-attribute-list with an
+      //    attribute-name of Max-Age and an attribute-value of expiry-time.
+      cookieAttributeList.maxAge = deltaSeconds
+    } else if (attributeNameLowercase === 'domain') {
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.3
     // If the attribute-name case-insensitively matches the string "Domain",
     // the user agent MUST process the cookie-av as follows.
 
-    // 1. Let cookie-domain be the attribute-value.
-    let cookieDomain = attributeValue
+      // 1. Let cookie-domain be the attribute-value.
+      let cookieDomain = attributeValue
 
-    // 2. If cookie-domain starts with %x2E ("."), let cookie-domain be
-    //    cookie-domain without its leading %x2E (".").
-    if (cookieDomain[0] === '.') {
-      cookieDomain = cookieDomain.slice(1)
-    }
+      // 2. If cookie-domain starts with %x2E ("."), let cookie-domain be
+      //    cookie-domain without its leading %x2E (".").
+      if (cookieDomain[0] === '.') {
+        cookieDomain = cookieDomain.slice(1)
+      }
 
-    // 3. Convert the cookie-domain to lower case.
-    cookieDomain = cookieDomain.toLowerCase()
+      // 3. Convert the cookie-domain to lower case.
+      cookieDomain = cookieDomain.toLowerCase()
 
-    // 4. Append an attribute to the cookie-attribute-list with an
-    //    attribute-name of Domain and an attribute-value of cookie-domain.
-    cookieAttributeList.domain = cookieDomain
-  } else if (attributeNameLowercase === 'path') {
+      // 4. Append an attribute to the cookie-attribute-list with an
+      //    attribute-name of Domain and an attribute-value of cookie-domain.
+      cookieAttributeList.domain = cookieDomain
+    } else if (attributeNameLowercase === 'path') {
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.4
     // If the attribute-name case-insensitively matches the string "Path",
     // the user agent MUST process the cookie-av as follows.
 
-    // 1. If the attribute-value is empty or if the first character of the
-    //    attribute-value is not %x2F ("/"):
-    let cookiePath = ''
-    if (attributeValue.length === 0 || attributeValue[0] !== '/') {
+      // 1. If the attribute-value is empty or if the first character of the
+      //    attribute-value is not %x2F ("/"):
+      let cookiePath = ''
+      if (attributeValue.length === 0 || attributeValue[0] !== '/') {
       // 1. Let cookie-path be the default-path.
-      cookiePath = '/'
-    } else {
+        cookiePath = '/'
+      } else {
       // Otherwise:
 
-      // 1. Let cookie-path be the attribute-value.
-      cookiePath = attributeValue
-    }
+        // 1. Let cookie-path be the attribute-value.
+        cookiePath = attributeValue
+      }
 
-    // 2. Append an attribute to the cookie-attribute-list with an
-    //    attribute-name of Path and an attribute-value of cookie-path.
-    cookieAttributeList.path = cookiePath
-  } else if (attributeNameLowercase === 'secure') {
+      // 2. Append an attribute to the cookie-attribute-list with an
+      //    attribute-name of Path and an attribute-value of cookie-path.
+      cookieAttributeList.path = cookiePath
+    } else if (attributeNameLowercase === 'secure') {
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.5
     // If the attribute-name case-insensitively matches the string "Secure",
     // the user agent MUST append an attribute to the cookie-attribute-list
     // with an attribute-name of Secure and an empty attribute-value.
 
-    cookieAttributeList.secure = true
-  } else if (attributeNameLowercase === 'httponly') {
+      cookieAttributeList.secure = true
+    } else if (attributeNameLowercase === 'httponly') {
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.6
     // If the attribute-name case-insensitively matches the string
     // "HttpOnly", the user agent MUST append an attribute to the cookie-
     // attribute-list with an attribute-name of HttpOnly and an empty
     // attribute-value.
 
-    cookieAttributeList.httpOnly = true
-  } else if (attributeNameLowercase === 'samesite') {
+      cookieAttributeList.httpOnly = true
+    } else if (attributeNameLowercase === 'samesite') {
     // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-5.4.7
     // If the attribute-name case-insensitively matches the string
     // "SameSite", the user agent MUST process the cookie-av as follows:
 
-    const attributeValueLowercase = attributeValue.toLowerCase()
+      const attributeValueLowercase = attributeValue.toLowerCase()
 
-    // 1. If cookie-av's attribute-value is a case-insensitive match for
-    //    "None", append an attribute to the cookie-attribute-list with an
-    //    attribute-name of "SameSite" and an attribute-value of "None".
-    if (attributeValueLowercase === 'none') {
-      cookieAttributeList.sameSite = 'None'
-    } else if (attributeValueLowercase === 'strict') {
+      // 1. If cookie-av's attribute-value is a case-insensitive match for
+      //    "None", append an attribute to the cookie-attribute-list with an
+      //    attribute-name of "SameSite" and an attribute-value of "None".
+      if (attributeValueLowercase === 'none') {
+        cookieAttributeList.sameSite = 'None'
+      } else if (attributeValueLowercase === 'strict') {
       // 2. If cookie-av's attribute-value is a case-insensitive match for
       //    "Strict", append an attribute to the cookie-attribute-list with
       //    an attribute-name of "SameSite" and an attribute-value of
       //    "Strict".
-      cookieAttributeList.sameSite = 'Strict'
-    } else if (attributeValueLowercase === 'lax') {
+        cookieAttributeList.sameSite = 'Strict'
+      } else if (attributeValueLowercase === 'lax') {
       // 3. If cookie-av's attribute-value is a case-insensitive match for
       //    "Lax", append an attribute to the cookie-attribute-list with an
       //    attribute-name of "SameSite" and an attribute-value of "Lax".
-      cookieAttributeList.sameSite = 'Lax'
-    }
-  } else {
-    cookieAttributeList.unparsed ??= []
+        cookieAttributeList.sameSite = 'Lax'
+      }
+    } else {
+      cookieAttributeList.unparsed ??= []
 
-    cookieAttributeList.unparsed.push(`${attributeName}=${attributeValue}`)
-  }
+      cookieAttributeList.unparsed.push(`${attributeName}=${attributeValue}`)
+    }
 
   // 8. Return to Step 1 of this algorithm.
-  return parseUnparsedAttributes(unparsedAttributes, cookieAttributeList)
+  }
 }
 
 module.exports = {
@@ -35396,7 +39240,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 9769:
+/***/ 8009:
 /***/ ((module) => {
 
 "use strict";
@@ -35717,8 +39561,27 @@ function stringify (cookie) {
     out.push(`Path=${cookie.path}`)
   }
 
-  if (cookie.expires && cookie.expires.toString() !== 'Invalid Date') {
-    out.push(`Expires=${toIMFDate(cookie.expires)}`)
+  // A numeric 0 is the Unix epoch, not an absent value -- the same reason the
+  // Max-Age check above tests the type rather than truthiness.
+  //
+  // expires is Date | number, so the "Invalid Date" check only guards the Date
+  // form. A number that is not a valid time value (NaN, +/-Infinity, or outside
+  // the Date range) would otherwise reach toIMFDate, which splices undefined and
+  // NaN into the header value instead of failing.
+  if (cookie.expires != null) {
+    const expiresMs = cookie.expires instanceof Date
+      ? cookie.expires.getTime()
+      : cookie.expires
+
+    // The largest time value a Date can represent, in milliseconds, i.e.
+    // 100,000,000 days either side of the epoch (ECMA-262 Date Time Values).
+    // Anything within it is safe for toIMFDate to format; anything beyond it
+    // produces an invalid Date and must be ignored instead.
+    const maxTimeValue = 8640000000000000
+
+    if (typeof expiresMs === 'number' && Number.isFinite(expiresMs) && Math.abs(expiresMs) <= maxTimeValue) {
+      out.push(`Expires=${toIMFDate(cookie.expires)}`)
+    }
   }
 
   if (cookie.sameSite) {
@@ -35756,13 +39619,14 @@ module.exports = {
 
 /***/ }),
 
-/***/ 6419:
+/***/ 3939:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
+const buffer = __nccwpck_require__(4573)
 const { Transform } = __nccwpck_require__(7075)
-const { isASCIINumber, isValidLastEventId } = __nccwpck_require__(5623)
+const { isASCIINumber, isValidLastEventId } = __nccwpck_require__(2759)
 
 /**
  * @type {number[]} BOM
@@ -35785,10 +39649,18 @@ const COLON = 0x3A
  */
 const SPACE = 0x20
 
+const defaultMaxEventSize = buffer.kStringMaxLength
+
 const DATA = Buffer.from('data')
 const EVENT = Buffer.from('event')
 const ID = Buffer.from('id')
 const RETRY = Buffer.from('retry')
+
+// Each data field creates a string node, and each unconsumed input chunk keeps
+// a Buffer wrapper. The absolute ceiling protects the large default byte limit.
+const minParserItems = 1024
+const maxParserItems = 131072
+const bytesPerParserItem = 128
 
 function isASCIINumberBytes (buffer, start) {
   if (start >= buffer.length) {
@@ -35826,6 +39698,12 @@ function isFieldName (line, length, field) {
   }
 
   return true
+}
+
+function createMaxEventSizeExceededError () {
+  const error = new Error('EventSource message size exceeded')
+  error.aborted = false
+  return error
 }
 
 /**
@@ -35876,6 +39754,13 @@ class EventSourceStream extends Transform {
   pos = 0
   lineChunkIndex = 0
   linePos = 0
+  lineLength = 0
+  eventSize = 0
+  eventFieldSizes = { data: 0, event: 0, id: 0, retry: 0 }
+  dataLineCount = 0
+  maxEventSize
+  maxDataLines
+  maxBufferedChunks
 
   event = {
     data: undefined,
@@ -35887,6 +39772,7 @@ class EventSourceStream extends Transform {
   /**
    * @param {object} options
    * @param {boolean} [options.readableObjectMode]
+   * @param {number} [options.maxEventSize]
    * @param {eventSourceSettings} [options.eventSourceSettings]
    * @param {(chunk: any, encoding?: BufferEncoding | undefined) => boolean} [options.push]
    */
@@ -35898,6 +39784,12 @@ class EventSourceStream extends Transform {
     super(options)
 
     this.state = options.eventSourceSettings || {}
+    this.maxEventSize = options.maxEventSize ?? defaultMaxEventSize
+    const parserItemLimit = this.maxEventSize > 0
+      ? Math.min(maxParserItems, Math.max(minParserItems, Math.floor(this.maxEventSize / bytesPerParserItem)))
+      : 0
+    this.maxDataLines = parserItemLimit
+    this.maxBufferedChunks = parserItemLimit
     if (options.push) {
       this.push = options.push
     }
@@ -35915,6 +39807,14 @@ class EventSourceStream extends Transform {
       return
     }
 
+    // A leading line ending can immediately release the currently buffered
+    // line, even when it uses the final allowed chunk slot.
+    if (this.maxEventSize > 0 &&
+        this.chunks.length >= this.maxBufferedChunks &&
+        chunk[0] !== LF && chunk[0] !== CR) {
+      callback(createMaxEventSizeExceededError())
+      return
+    }
     this.chunks.push(chunk)
 
     // Strip leading byte-order-mark if we opened the stream and started
@@ -35993,7 +39893,12 @@ class EventSourceStream extends Transform {
 
         // In any case, we can process the line as we reached an
         // end-of-line character
-        this.parseLine(this.readLine(), this.event)
+        try {
+          this.parseLine(this.readLine(), this.event)
+        } catch (error) {
+          callback(error)
+          return
+        }
         this.consumeCurrentByte()
         // A line was processed and this could be the end of the event. We need
         // to check if the next line is empty to determine if the event is
@@ -36002,10 +39907,23 @@ class EventSourceStream extends Transform {
         continue
       }
 
+      // readLine() is only called after CR or LF. Reject an unfinished line
+      // before it can retain an unbounded number of decoded chunks. The seven
+      // extra bytes allow the longest field prefix ("event: " or "retry: ").
+      if (this.maxEventSize > 0 && ++this.lineLength > this.maxEventSize + 7) {
+        callback(createMaxEventSizeExceededError())
+        return
+      }
       this.advanceCursor()
     }
 
     callback()
+  }
+
+  _destroy (error, callback) {
+    this.chunks.length = 0
+    this.clearEvent()
+    super._destroy(error, callback)
   }
 
   /**
@@ -36044,6 +39962,13 @@ class EventSourceStream extends Transform {
     }
 
     if (isFieldName(line, fieldLength, DATA)) {
+      if (this.maxEventSize > 0 && this.dataLineCount >= this.maxDataLines) {
+        throw createMaxEventSizeExceededError()
+      }
+      const valueBytes = line.length - valueStart
+      const dataSize = this.eventFieldSizes.data + (event.data === undefined ? 0 : 1) + valueBytes
+      this.setEventFieldSize('data', dataSize)
+
       const value = line.toString('utf8', valueStart)
 
       if (event.data === undefined) {
@@ -36051,11 +39976,13 @@ class EventSourceStream extends Transform {
       } else {
         event.data += `\n${value}`
       }
+      this.dataLineCount++
       return
     }
 
     if (isFieldName(line, fieldLength, RETRY)) {
       if (isASCIINumberBytes(line, valueStart)) {
+        this.setEventFieldSize('retry', line.length - valueStart)
         event.retry = line.toString('utf8', valueStart)
       }
       return
@@ -36063,18 +39990,27 @@ class EventSourceStream extends Transform {
 
     if (isFieldName(line, fieldLength, ID)) {
       if (isValidLastEventIdBytes(line, valueStart)) {
+        this.setEventFieldSize('id', line.length - valueStart)
         event.id = line.toString('utf8', valueStart)
       }
       return
     }
 
     if (isFieldName(line, fieldLength, EVENT)) {
-      const value = line.toString('utf8', valueStart)
-
-      if (value.length > 0) {
-        event.event = value
+      if (valueStart < line.length) {
+        this.setEventFieldSize('event', line.length - valueStart)
+        event.event = line.toString('utf8', valueStart)
       }
     }
+  }
+
+  setEventFieldSize (field, size) {
+    const eventSize = this.eventSize - this.eventFieldSizes[field] + size
+    if (this.maxEventSize > 0 && eventSize > this.maxEventSize) {
+      throw createMaxEventSizeExceededError()
+    }
+    this.eventSize = eventSize
+    this.eventFieldSizes[field] = size
   }
 
   /**
@@ -36107,6 +40043,12 @@ class EventSourceStream extends Transform {
     this.event.event = undefined
     this.event.id = undefined
     this.event.retry = undefined
+    this.eventSize = 0
+    this.dataLineCount = 0
+    this.eventFieldSizes.data = 0
+    this.eventFieldSizes.event = 0
+    this.eventFieldSizes.id = 0
+    this.eventFieldSizes.retry = 0
   }
 
   hasPendingEvent () {
@@ -36142,14 +40084,16 @@ class EventSourceStream extends Transform {
   syncLineStartToCursor () {
     this.lineChunkIndex = this.chunkIndex
     this.linePos = this.pos
+    this.lineLength = 0
     this.dropConsumedChunks()
   }
 
   dropConsumedChunks () {
-    while (this.lineChunkIndex > 0) {
-      this.chunks.shift()
-      this.lineChunkIndex--
-      this.chunkIndex--
+    if (this.lineChunkIndex > 0) {
+      const consumed = this.lineChunkIndex
+      this.chunks.splice(0, consumed)
+      this.lineChunkIndex = 0
+      this.chunkIndex -= consumed
     }
 
     if (this.chunkIndex === this.chunks.length) {
@@ -36258,22 +40202,27 @@ module.exports = {
 
 /***/ }),
 
-/***/ 578:
+/***/ 6898:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { pipeline } = __nccwpck_require__(7075)
-const { fetching } = __nccwpck_require__(2986)
-const { webidl } = __nccwpck_require__(1555)
-const { EventSourceStream } = __nccwpck_require__(6419)
-const { parseMIMEType } = __nccwpck_require__(3200)
-const { createFastMessageEvent } = __nccwpck_require__(6344)
-const { isNetworkError } = __nccwpck_require__(4263)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
-const { environmentSettingsObject } = __nccwpck_require__(1748)
-const { createPotentialCORSRequest } = __nccwpck_require__(5623)
+const { fetching } = __nccwpck_require__(5498)
+const { webidl } = __nccwpck_require__(4483)
+const { EventSourceStream } = __nccwpck_require__(3939)
+const { parseMIMEType } = __nccwpck_require__(8400)
+const { createFastMessageEvent } = __nccwpck_require__(1336)
+const { isNetworkError } = __nccwpck_require__(3751)
+const { cloneRequest } = __nccwpck_require__(355)
+const { isValidHeaderValue, kEnumerableProperty } = __nccwpck_require__(6364)
+const { environmentSettingsObject } = __nccwpck_require__(676)
+const { createPotentialCORSRequest } = __nccwpck_require__(2759)
+const { getGlobalDispatcher } = __nccwpck_require__(9145)
+const { isomorphicDecode } = __nccwpck_require__(1720)
+
+const textEncoder = new TextEncoder()
 
 let experimentalWarned = false
 
@@ -36288,6 +40237,14 @@ let experimentalWarned = false
  * @type {3000}
  */
 const defaultReconnectionTime = 3000
+
+/**
+ * The largest delay setTimeout supports. Larger values (including Infinity)
+ * make Node.js fire the timer after 1 ms instead, which would turn a large
+ * reconnection time into a reconnect storm.
+ * @type {number}
+ */
+const maxReconnectionTime = 2 ** 31 - 1
 
 /**
  * The readyState attribute represents the state of the connection.
@@ -36451,6 +40408,8 @@ class EventSource extends EventTarget {
    * @readonly
    */
   get readyState () {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     return this.#readyState
   }
 
@@ -36460,6 +40419,8 @@ class EventSource extends EventTarget {
    * @returns {string}
    */
   get url () {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     return this.#url
   }
 
@@ -36468,6 +40429,8 @@ class EventSource extends EventTarget {
    * instantiated with CORS credentials set (true), or not (false, the default).
    */
   get withCredentials () {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     return this.#withCredentials
   }
 
@@ -36476,8 +40439,22 @@ class EventSource extends EventTarget {
 
     this.#readyState = CONNECTING
 
+    // Fetch a copy of the request so that every connection starts from the
+    // original request. Fetch mutates the request it is given (URL list,
+    // redirect count, response tainting and, on cross-origin redirects,
+    // headers), so reusing it makes reconnects go to the last redirect
+    // target and, after 20 redirects in total, fail forever.
+    // cloneRequest() shares the URL list, so copy it as well.
+    // 301/308 permanent redirects are handled the same as 302/307 temporary
+    // redirects. While the original EventSource spec required that permanent
+    // redirects be handled, WHATWG removed that requirement and has not
+    // yet opted to restore it... therefore all redirects gets handled the
+    // same.
+    const request = cloneRequest(this.#request)
+    request.urlList = [...this.#request.urlList]
+
     const fetchParams = {
-      request: this.#request,
+      request,
       dispatcher: this.#dispatcher
     }
 
@@ -36545,6 +40522,7 @@ class EventSource extends EventTarget {
 
       const eventSourceStream = new EventSourceStream({
         eventSourceSettings: this.#state,
+        maxEventSize: this.#dispatcher.eventSourceOptions?.maxEventSize,
         push: (event) => {
           this.dispatchEvent(createFastMessageEvent(
             event.type,
@@ -36604,13 +40582,17 @@ class EventSource extends EventTarget {
       //         string, encoded as UTF-8.
       //      2. Set (`Last-Event-ID`, lastEventIDValue) in request's header
       //         list.
+      this.#request.headersList.delete('last-event-id', true)
       if (this.#state.lastEventId.length) {
-        this.#request.headersList.set('last-event-id', this.#state.lastEventId, true)
+        const lastEventId = isomorphicDecode(textEncoder.encode(this.#state.lastEventId))
+        if (isValidHeaderValue(lastEventId)) {
+          this.#request.headersList.set('last-event-id', lastEventId, true)
+        }
       }
 
       //   4. Fetch request and process the response obtained in this fashion, if any, as described earlier in this section.
       this.#connect()
-    }, this.#state.reconnectionTime)?.unref()
+    }, Math.min(this.#state.reconnectionTime, maxReconnectionTime))?.unref()
   }
 
   /**
@@ -36618,7 +40600,7 @@ class EventSource extends EventTarget {
    * CLOSED.
    */
   close () {
-    webidl.brandCheck(this, EventSource)
+    webidl.brandCheck(this, webidl.is.EventSource)
 
     if (this.#readyState === CLOSED) return
     this.#readyState = CLOSED
@@ -36627,10 +40609,14 @@ class EventSource extends EventTarget {
   }
 
   get onopen () {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     return this.#events.open
   }
 
   set onopen (fn) {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     if (this.#events.open) {
       this.removeEventListener('open', this.#events.open)
     }
@@ -36646,10 +40632,14 @@ class EventSource extends EventTarget {
   }
 
   get onmessage () {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     return this.#events.message
   }
 
   set onmessage (fn) {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     if (this.#events.message) {
       this.removeEventListener('message', this.#events.message)
     }
@@ -36665,10 +40655,14 @@ class EventSource extends EventTarget {
   }
 
   get onerror () {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     return this.#events.error
   }
 
   set onerror (fn) {
+    webidl.brandCheck(this, webidl.is.EventSource)
+
     if (this.#events.error) {
       this.removeEventListener('error', this.#events.error)
     }
@@ -36680,6 +40674,12 @@ class EventSource extends EventTarget {
       this.#events.error = fn
     } else {
       this.#events.error = null
+    }
+  }
+
+  static {
+    webidl.is.EventSource = (arg) => {
+      return arg != null && typeof arg === 'object' && #events in arg
     }
   }
 }
@@ -36729,7 +40729,8 @@ webidl.converters.EventSourceInitDict = webidl.dictionaryConverter([
   },
   {
     key: 'dispatcher', // undici only
-    converter: webidl.converters.any
+    converter: webidl.converters.any,
+    defaultValue: () => getGlobalDispatcher()
   },
   {
     key: 'node', // undici only
@@ -36756,13 +40757,13 @@ module.exports = {
 
 /***/ }),
 
-/***/ 5623:
+/***/ 2759:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { makeRequest } = __nccwpck_require__(3123)
+const { makeRequest } = __nccwpck_require__(355)
 
 /**
  * Checks if the given value is a valid LastEventId.
@@ -36824,28 +40825,27 @@ module.exports = {
 
 /***/ }),
 
-/***/ 4296:
+/***/ 5816:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const util = __nccwpck_require__(4108)
+const util = __nccwpck_require__(6364)
 const {
-  ReadableStreamFrom,
   readableStreamClose,
   fullyReadBody,
   extractMimeType
-} = __nccwpck_require__(1748)
-const { FormData, setFormDataState, getFormDataBoundary } = __nccwpck_require__(1242)
-const { webidl } = __nccwpck_require__(1555)
+} = __nccwpck_require__(676)
+const { FormData, setFormDataState, getFormDataBoundary } = __nccwpck_require__(6762)
+const { webidl } = __nccwpck_require__(4483)
 const assert = __nccwpck_require__(4589)
 const { isErrored, isDisturbed } = __nccwpck_require__(7075)
 const { isUint8Array } = __nccwpck_require__(3429)
-const { serializeAMimeType } = __nccwpck_require__(3200)
-const { multipartFormDataParser } = __nccwpck_require__(6000)
-const { parseJSONFromBytes } = __nccwpck_require__(7208)
-const { utf8DecodeBytes } = __nccwpck_require__(5368)
+const { serializeAMimeType } = __nccwpck_require__(8400)
+const { multipartFormDataParser } = __nccwpck_require__(1632)
+const { parseJSONFromBytes } = __nccwpck_require__(1720)
+const { utf8DecodeBytes } = __nccwpck_require__(360)
 const { ReadableStreamTee } = __nccwpck_require__(7830)
 
 const textEncoder = new TextEncoder()
@@ -36870,7 +40870,6 @@ const streamRegistry = new FinalizationRegistry((weakRef) => {
 function extractBody (object, keepalive = false) {
   // 1. Let stream be null.
   let stream = null
-  let controller = null
 
   // 2. If object is a ReadableStream object, then set stream to object.
   if (webidl.is.ReadableStream(object)) {
@@ -36883,11 +40882,44 @@ function extractBody (object, keepalive = false) {
     // 4. Otherwise, set stream to a new ReadableStream object, and set
     //    up stream with byte reading support.
     stream = new ReadableStream({
-      pull () {},
-      start (c) {
-        controller = c
+      start () {},
+      async pull (controller) {
+        // 19.1. Run action.
+        const result = action()
+
+        const iterator = result?.[Symbol.asyncIterator]?.()
+        if (iterator == null) {
+          // 19.2. Whenever one or more bytes are available and stream is not errored,
+          // enqueue the result of creating a Uint8Array from the available bytes into stream.
+          if (result?.length && !isErrored(stream)) {
+            controller.enqueue(typeof result === 'string' ? textEncoder.encode(result) : new Uint8Array(result))
+          }
+
+          // 19.3. When running action is done, close stream.
+          queueMicrotask(() => readableStreamClose(controller))
+          return
+        }
+
+        while (true) {
+          const { value, done } = await iterator.next()
+
+          // 19.3. When running action is done, close stream.
+          if (done) {
+            queueMicrotask(() => readableStreamClose(controller))
+            return
+          }
+
+          // 19.2. Whenever one or more bytes are available and stream is not errored,
+          // enqueue the result of creating a Uint8Array from the available bytes into stream.
+          if (value.length && !isErrored(stream)) {
+            controller.enqueue(new Uint8Array(value))
+            return
+          }
+        }
       },
-      cancel () {},
+      cancel (reason) {
+        return action()[Symbol.asyncIterator]?.().return(reason)
+      },
       type: 'bytes'
     })
   }
@@ -36986,7 +41018,7 @@ function extractBody (object, keepalive = false) {
     // Set source to object.
     source = object
 
-    action = async function * () {
+    const parts = (async function * () {
       for (const part of blobParts) {
         if (part.stream) {
           yield * part.stream()
@@ -36994,7 +41026,8 @@ function extractBody (object, keepalive = false) {
           yield part
         }
       }
-    }
+    })()
+    action = () => parts
 
     // Set type to `multipart/form-data; boundary=`,
     // followed by the multipart/form-data boundary string generated
@@ -37027,49 +41060,33 @@ function extractBody (object, keepalive = false) {
       )
     }
 
-    stream =
-      webidl.is.ReadableStream(object) ? object : ReadableStreamFrom(object)
-  }
-
-  // 11. If source is a byte sequence, then set action to a
-  // step that returns source and length to source’s length.
-  if (typeof source === 'string' || isUint8Array(source)) {
-    action = () => {
-      length = typeof source === 'string' ? Buffer.byteLength(source) : source.length
-      return source
-    }
-  }
-
-  // 12. If action is non-null, then run these steps in parallel:
-  if (action != null) {
-    ;(async () => {
-      // 1. Run action.
-      const result = action()
-
-      // 2. Whenever one or more bytes are available and stream is not errored,
-      //    enqueue the result of creating a Uint8Array from the available bytes into stream.
-      const iterator = result?.[Symbol.asyncIterator]?.()
-      if (iterator) {
-        for await (const bytes of iterator) {
-          if (isErrored(stream)) break
-          if (bytes.length) {
-            controller.enqueue(new Uint8Array(bytes))
+    stream = webidl.is.ReadableStream(object)
+      ? object
+      : ReadableStream.from(object).pipeThrough(new TransformStream({
+        transform (chunk, controller) {
+          const bytes = isUint8Array(chunk) ? chunk : Buffer.from(chunk)
+          if (bytes.byteLength) {
+            controller.enqueue(bytes)
           }
         }
-      } else if (result?.length && !isErrored(stream)) {
-        controller.enqueue(typeof result === 'string' ? textEncoder.encode(result) : new Uint8Array(result))
-      }
-
-      // 3. When running action is done, close stream.
-      queueMicrotask(() => readableStreamClose(controller))
-    })()
+      }))
   }
 
-  // 13. Let body be a body whose stream is stream, source is source,
+  // 18. If source is a byte sequence, then set action to a
+  // step that returns source and length to source’s length.
+  if (typeof source === 'string' || isUint8Array(source)) {
+    action = () => source
+    length = typeof source === 'string' ? Buffer.byteLength(source) : source.length
+  }
+
+  // 19. If action is non-null, then run these steps in parallel:
+  // Note: this is done in the pull method of the stream created above
+
+  // 20. Let body be a body whose stream is stream, source is source,
   // and length is length.
   const body = { stream, source, length }
 
-  // 14. Return (body, type).
+  // 21. Return (body, type).
   return [body, type]
 }
 
@@ -37123,7 +41140,7 @@ function cloneBody (body) {
   }
 }
 
-function bodyMixinMethods (instance, getInternalState) {
+function bodyMixinMethods (brandCheck, getInternalState) {
   const methods = {
     blob () {
       // The blob() method steps are to return the result of
@@ -37143,7 +41160,7 @@ function bodyMixinMethods (instance, getInternalState) {
         // Return a Blob whose contents are bytes and type attribute
         // is mimeType.
         return new Blob([bytes], { type: mimeType })
-      }, instance, getInternalState)
+      }, brandCheck, getInternalState)
     },
 
     arrayBuffer () {
@@ -37153,19 +41170,19 @@ function bodyMixinMethods (instance, getInternalState) {
       // whose contents are bytes.
       return consumeBody(this, (bytes) => {
         return new Uint8Array(bytes).buffer
-      }, instance, getInternalState)
+      }, brandCheck, getInternalState)
     },
 
     text () {
       // The text() method steps are to return the result of running
       // consume body with this and UTF-8 decode.
-      return consumeBody(this, utf8DecodeBytes, instance, getInternalState)
+      return consumeBody(this, utf8DecodeBytes, brandCheck, getInternalState)
     },
 
     json () {
       // The json() method steps are to return the result of running
       // consume body with this and parse JSON from bytes.
-      return consumeBody(this, parseJSONFromBytes, instance, getInternalState)
+      return consumeBody(this, parseJSONFromBytes, brandCheck, getInternalState)
     },
 
     formData () {
@@ -37213,7 +41230,7 @@ function bodyMixinMethods (instance, getInternalState) {
         throw new TypeError(
           'Content-Type was not one of "multipart/form-data" or "application/x-www-form-urlencoded".'
         )
-      }, instance, getInternalState)
+      }, brandCheck, getInternalState)
     },
 
     bytes () {
@@ -37222,7 +41239,7 @@ function bodyMixinMethods (instance, getInternalState) {
       // result of creating a Uint8Array from bytes in this’s relevant realm.
       return consumeBody(this, (bytes) => {
         return new Uint8Array(bytes)
-      }, instance, getInternalState)
+      }, brandCheck, getInternalState)
     },
 
     textStream () {
@@ -37272,20 +41289,20 @@ function bodyMixinMethods (instance, getInternalState) {
   return methods
 }
 
-function mixinBody (prototype, getInternalState) {
-  Object.assign(prototype.prototype, bodyMixinMethods(prototype, getInternalState))
+function mixinBody (prototype, getInternalState, brandCheck) {
+  Object.assign(prototype.prototype, bodyMixinMethods(brandCheck, getInternalState))
 }
 
 /**
  * @see https://fetch.spec.whatwg.org/#concept-body-consume-body
  * @param {any} object internal state
  * @param {(value: unknown) => unknown} convertBytesToJSValue
- * @param {any} instance
+ * @param {import('../../../types/webidl').WebidlIsFunction} brandCheck
  * @param {(target: any) => any} getInternalState
  */
-function consumeBody (object, convertBytesToJSValue, instance, getInternalState) {
+function consumeBody (object, convertBytesToJSValue, brandCheck, getInternalState) {
   try {
-    webidl.brandCheck(object, instance)
+    webidl.brandCheck(object, brandCheck)
   } catch (e) {
     return Promise.reject(e)
   }
@@ -37379,7 +41396,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 2539:
+/***/ 9675:
 /***/ ((module) => {
 
 "use strict";
@@ -37518,21 +41535,21 @@ module.exports = {
 
 /***/ }),
 
-/***/ 3200:
+/***/ 8400:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const assert = __nccwpck_require__(4589)
-const { forgivingBase64, collectASequenceOfCodePoints, collectASequenceOfCodePointsFast, isomorphicDecode, removeASCIIWhitespace, removeChars } = __nccwpck_require__(7208)
+const { asciiLowercase, forgivingBase64, collectASequenceOfCodePoints, collectASequenceOfCodePointsFast, isomorphicDecode, removeASCIIWhitespace, removeChars } = __nccwpck_require__(1720)
 
 const encoder = new TextEncoder()
 
 /**
  * @see https://mimesniff.spec.whatwg.org/#http-token-code-point
  */
-const HTTP_TOKEN_CODEPOINTS = /^[-!#$%&'*+.^_|~A-Za-z0-9]+$/u
+const HTTP_TOKEN_CODEPOINTS = /^[-!#$%&'*+.^_`|~A-Za-z0-9]+$/u
 const HTTP_WHITESPACE_REGEX = /[\u000A\u000D\u0009\u0020]/u // eslint-disable-line
 
 /**
@@ -37593,7 +41610,7 @@ function dataURLProcessor (dataURL) {
   // 11. If mimeType ends with U+003B (;), followed by
   // zero or more U+0020 SPACE, followed by an ASCII
   // case-insensitive match for "base64", then:
-  if (/;(?:\u0020*)base64$/ui.test(mimeType)) {
+  if (/;\u0020*[Bb][Aa][Ss][Ee]64$/u.test(mimeType)) {
     // 1. Let stringBody be the isomorphic decode of body.
     const stringBody = isomorphicDecode(body)
 
@@ -37792,8 +41809,8 @@ function parseMIMEType (input) {
     return 'failure'
   }
 
-  const typeLowercase = type.toLowerCase()
-  const subtypeLowercase = subtype.toLowerCase()
+  const typeLowercase = asciiLowercase(type)
+  const subtypeLowercase = asciiLowercase(subtype)
 
   // 10. Let mimeType be a new MIME type record whose type
   // is type, in ASCII lowercase, and subtype is subtype,
@@ -37833,7 +41850,7 @@ function parseMIMEType (input) {
 
     // 4. Set parameterName to parameterName, in ASCII
     // lowercase.
-    parameterName = parameterName.toLowerCase()
+    parameterName = asciiLowercase(parameterName)
 
     // 5. If position is not past the end of input, then:
     if (position.position < input.length) {
@@ -38122,18 +42139,18 @@ module.exports = {
 
 /***/ }),
 
-/***/ 6000:
+/***/ 1632:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { bufferToLowerCasedHeaderName } = __nccwpck_require__(4108)
-const { HTTP_TOKEN_CODEPOINTS } = __nccwpck_require__(3200)
-const { makeEntry } = __nccwpck_require__(1242)
-const { webidl } = __nccwpck_require__(1555)
+const { bufferToLowerCasedHeaderName } = __nccwpck_require__(6364)
+const { HTTP_TOKEN_CODEPOINTS } = __nccwpck_require__(8400)
+const { makeEntry } = __nccwpck_require__(6762)
+const { webidl } = __nccwpck_require__(4483)
 const assert = __nccwpck_require__(4589)
-const { isomorphicDecode } = __nccwpck_require__(7208)
+const { isomorphicDecode } = __nccwpck_require__(1720)
 
 const dd = Buffer.from('--')
 const decoder = new TextDecoder()
@@ -38389,19 +42406,27 @@ function parseContentDispositionAttribute (input, position) {
       position
     )
 
-    // Check for utf-8'' prefix (case insensitive)
+    const charsetSeparator = headerValue.indexOf(0x27)
+    const languageSeparator = charsetSeparator === -1
+      ? -1
+      : headerValue.indexOf(0x27, charsetSeparator + 1)
+
+    if (charsetSeparator === -1 || languageSeparator === -1) {
+      throw parsingError('expected charset and language separators in extended value')
+    }
+
     if (
+      charsetSeparator !== 5 ||
       (headerValue[0] !== 0x75 && headerValue[0] !== 0x55) || // u or U
       (headerValue[1] !== 0x74 && headerValue[1] !== 0x54) || // t or T
       (headerValue[2] !== 0x66 && headerValue[2] !== 0x46) || // f or F
       headerValue[3] !== 0x2d || // -
       headerValue[4] !== 0x38 // 8
     ) {
-      throw parsingError('unknown encoding, expected utf-8\'\'')
+      throw parsingError('unknown charset, expected utf-8')
     }
 
-    // Skip utf-8'' and decode the rest
-    value = decodeURIComponent(decoder.decode(headerValue.subarray(7)))
+    value = decodeURIComponent(decoder.decode(headerValue.subarray(languageSeparator + 1)))
   } else if (input[position.position] === 0x22 /* " */) {
     // Quoted string
     position.position++ // skip opening quote
@@ -38716,21 +42741,23 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1242:
+/***/ 6762:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { iteratorMixin } = __nccwpck_require__(1748)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
-const { webidl } = __nccwpck_require__(1555)
+const { iteratorMixin } = __nccwpck_require__(676)
+const { kEnumerableProperty } = __nccwpck_require__(6364)
+const { webidl } = __nccwpck_require__(4483)
 const nodeUtil = __nccwpck_require__(7975)
-const { runtimeFeatures } = __nccwpck_require__(8045)
+const { runtimeFeatures } = __nccwpck_require__(9021)
 
 const random = runtimeFeatures.has('crypto')
   ? (__nccwpck_require__(7598).randomInt)
   : (max) => Math.floor(Math.random() * max)
+
+let getFormDataState, setFormDataState, getFormDataBoundary
 
 // https://xhr.spec.whatwg.org/#formdata
 class FormData {
@@ -38750,7 +42777,7 @@ class FormData {
   }
 
   append (name, value, filename = undefined) {
-    webidl.brandCheck(this, FormData)
+    webidl.brandCheck(this, webidl.is.FormData)
 
     const prefix = 'FormData.append'
     webidl.argumentLengthCheck(arguments, 2, prefix)
@@ -38778,7 +42805,7 @@ class FormData {
   }
 
   delete (name) {
-    webidl.brandCheck(this, FormData)
+    webidl.brandCheck(this, webidl.is.FormData)
 
     const prefix = 'FormData.delete'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -38791,7 +42818,7 @@ class FormData {
   }
 
   get (name) {
-    webidl.brandCheck(this, FormData)
+    webidl.brandCheck(this, webidl.is.FormData)
 
     const prefix = 'FormData.get'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -38811,7 +42838,7 @@ class FormData {
   }
 
   getAll (name) {
-    webidl.brandCheck(this, FormData)
+    webidl.brandCheck(this, webidl.is.FormData)
 
     const prefix = 'FormData.getAll'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -38828,7 +42855,7 @@ class FormData {
   }
 
   has (name) {
-    webidl.brandCheck(this, FormData)
+    webidl.brandCheck(this, webidl.is.FormData)
 
     const prefix = 'FormData.has'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -38841,7 +42868,7 @@ class FormData {
   }
 
   set (name, value, filename = undefined) {
-    webidl.brandCheck(this, FormData)
+    webidl.brandCheck(this, webidl.is.FormData)
 
     const prefix = 'FormData.set'
     webidl.argumentLengthCheck(arguments, 2, prefix)
@@ -38906,40 +42933,34 @@ class FormData {
     return `FormData ${output.slice(output.indexOf(']') + 2)}`
   }
 
-  /**
-   * @param {FormData} formData
-   */
-  static getFormDataState (formData) {
-    return formData.#state
-  }
+  static {
+    /** @param {FormData} formData  */
+    getFormDataState = (formData) => formData.#state
 
-  /**
-   * @param {FormData} formData
-   * @param {any[]} newState
-   */
-  static setFormDataState (formData, newState) {
-    formData.#state = newState
-  }
+    /**
+     * @param {FormData} formData
+     * @param {any[]} newState
+     */
+    setFormDataState = (formData, newState) => {
+      formData.#state = newState
+    }
 
-  /**
-   * @param {FormData} formData
-   * @returns {string | null}
-   */
-  static getFormDataBoundary (formData) {
-    const boundary = formData.#boundary
-    if (boundary != null) return boundary
+    /**
+     * @param {FormData} formData
+     * @returns {string | null}
+     */
+    getFormDataBoundary = (formData) => {
+      // eslint-disable-next-line no-return-assign
+      return formData.#boundary ??= `----formdata-undici-0${`${random(1e11)}`.padStart(11, '0')}`
+    }
 
-    // eslint-disable-next-line no-return-assign
-    return formData.#boundary = `----formdata-undici-0${`${random(1e11)}`.padStart(11, '0')}`
+    webidl.is.FormData = (arg) => {
+      return arg != null && typeof arg === 'object' && #state in arg
+    }
   }
 }
 
-const { getFormDataState, setFormDataState, getFormDataBoundary } = FormData
-Reflect.deleteProperty(FormData, 'getFormDataState')
-Reflect.deleteProperty(FormData, 'setFormDataState')
-Reflect.deleteProperty(FormData, 'getFormDataBoundary')
-
-iteratorMixin('FormData', FormData, getFormDataState, 'name', 'value')
+iteratorMixin('FormData', FormData, getFormDataState, 'name', 'value', webidl.is.FormData)
 
 Object.defineProperties(FormData.prototype, {
   append: kEnumerableProperty,
@@ -38995,14 +43016,12 @@ function makeEntry (name, value, filename) {
   return { name, value }
 }
 
-webidl.is.FormData = webidl.util.MakeTypeAssertion(FormData)
-
 module.exports = { FormData, makeEntry, setFormDataState, getFormDataBoundary }
 
 
 /***/ }),
 
-/***/ 8943:
+/***/ 5743:
 /***/ ((module) => {
 
 "use strict";
@@ -39050,7 +43069,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 912:
+/***/ 9008:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -39058,14 +43077,14 @@ module.exports = {
 
 
 
-const { kConstruct } = __nccwpck_require__(9087)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
+const { kConstruct } = __nccwpck_require__(3599)
+const { kEnumerableProperty, setHeader } = __nccwpck_require__(6364)
 const {
   iteratorMixin,
   isValidHeaderName,
   isValidHeaderValue
-} = __nccwpck_require__(1748)
-const { webidl } = __nccwpck_require__(1555)
+} = __nccwpck_require__(676)
+const { webidl } = __nccwpck_require__(4483)
 const assert = __nccwpck_require__(4589)
 const util = __nccwpck_require__(7975)
 
@@ -39376,7 +43395,7 @@ class HeadersList {
 
     if (this.headersMap.size !== 0) {
       for (const { name, value } of this.headersMap.values()) {
-        headers[name] = value
+        setHeader(headers, name, value)
       }
     }
 
@@ -39479,6 +43498,8 @@ class HeadersList {
   }
 }
 
+let getHeadersGuard, setHeadersGuard, getHeadersList, setHeadersList
+
 // https://fetch.spec.whatwg.org/#headers-class
 class Headers {
   #guard
@@ -39514,7 +43535,7 @@ class Headers {
 
   // https://fetch.spec.whatwg.org/#dom-headers-append
   append (name, value) {
-    webidl.brandCheck(this, Headers)
+    webidl.brandCheck(this, webidl.is.Headers)
 
     webidl.argumentLengthCheck(arguments, 2, 'Headers.append')
 
@@ -39527,7 +43548,7 @@ class Headers {
 
   // https://fetch.spec.whatwg.org/#dom-headers-delete
   delete (name) {
-    webidl.brandCheck(this, Headers)
+    webidl.brandCheck(this, webidl.is.Headers)
 
     webidl.argumentLengthCheck(arguments, 1, 'Headers.delete')
 
@@ -39571,7 +43592,7 @@ class Headers {
 
   // https://fetch.spec.whatwg.org/#dom-headers-get
   get (name) {
-    webidl.brandCheck(this, Headers)
+    webidl.brandCheck(this, webidl.is.Headers)
 
     webidl.argumentLengthCheck(arguments, 1, 'Headers.get')
 
@@ -39594,7 +43615,7 @@ class Headers {
 
   // https://fetch.spec.whatwg.org/#dom-headers-has
   has (name) {
-    webidl.brandCheck(this, Headers)
+    webidl.brandCheck(this, webidl.is.Headers)
 
     webidl.argumentLengthCheck(arguments, 1, 'Headers.has')
 
@@ -39617,7 +43638,7 @@ class Headers {
 
   // https://fetch.spec.whatwg.org/#dom-headers-set
   set (name, value) {
-    webidl.brandCheck(this, Headers)
+    webidl.brandCheck(this, webidl.is.Headers)
 
     webidl.argumentLengthCheck(arguments, 2, 'Headers.set')
 
@@ -39665,7 +43686,7 @@ class Headers {
 
   // https://fetch.spec.whatwg.org/#dom-headers-getsetcookie
   getSetCookie () {
-    webidl.brandCheck(this, Headers)
+    webidl.brandCheck(this, webidl.is.Headers)
 
     // 1. If this’s header list does not contain `Set-Cookie`, then return « ».
     // 2. Return the values of all headers in this’s header list whose name is
@@ -39686,37 +43707,38 @@ class Headers {
     return `Headers ${util.formatWithOptions(options, this.#headersList.entries)}`
   }
 
-  static getHeadersGuard (o) {
-    return o.#guard
-  }
+  static {
+    /** @param {Headers} headers */
+    getHeadersGuard = (headers) => headers.#guard
 
-  static setHeadersGuard (o, guard) {
-    o.#guard = guard
-  }
+    /**
+     * @param {Headers} headers
+     * @param {string} guard
+     */
+    setHeadersGuard = (headers, guard) => {
+      headers.#guard = guard
+    }
 
-  /**
-   * @param {Headers} o
-   */
-  static getHeadersList (o) {
-    return o.#headersList
-  }
+    /**
+     * @param {Headers} headers
+     */
+    getHeadersList = (headers) => headers.#headersList
 
-  /**
-   * @param {Headers} target
-   * @param {HeadersList} list
-   */
-  static setHeadersList (target, list) {
-    target.#headersList = list
+    /**
+     * @param {Headers} target
+     * @param {HeadersList} list
+     */
+    setHeadersList = (target, list) => {
+      target.#headersList = list
+    }
+
+    webidl.is.Headers = (arg) => {
+      return arg != null && typeof arg === 'object' && #guard in arg
+    }
   }
 }
 
-const { getHeadersGuard, setHeadersGuard, getHeadersList, setHeadersList } = Headers
-Reflect.deleteProperty(Headers, 'getHeadersGuard')
-Reflect.deleteProperty(Headers, 'setHeadersGuard')
-Reflect.deleteProperty(Headers, 'getHeadersList')
-Reflect.deleteProperty(Headers, 'setHeadersList')
-
-iteratorMixin('Headers', Headers, headersListSortAndCombine, 0, 1)
+iteratorMixin('Headers', Headers, headersListSortAndCombine, 0, 1, webidl.is.Headers)
 
 Object.defineProperties(Headers.prototype, {
   append: kEnumerableProperty,
@@ -39777,7 +43799,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 2986:
+/***/ 5498:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -39792,9 +43814,9 @@ const {
   makeResponse,
   fromInnerResponse,
   getResponseState
-} = __nccwpck_require__(4263)
-const { HeadersList } = __nccwpck_require__(912)
-const { Request, cloneRequest, getRequestDispatcher, getRequestState, removeRequestAbortListener } = __nccwpck_require__(3123)
+} = __nccwpck_require__(3751)
+const { HeadersList } = __nccwpck_require__(9008)
+const { Request, cloneRequest, getRequestDispatcher, getRequestState, removeRequestAbortListener } = __nccwpck_require__(355)
 const zlib = __nccwpck_require__(8522)
 const {
   makePolicyContainer,
@@ -39829,25 +43851,26 @@ const {
   hasAuthenticationEntry,
   includesCredentials,
   isTraversableNavigable
-} = __nccwpck_require__(1748)
+} = __nccwpck_require__(676)
 const assert = __nccwpck_require__(4589)
-const { safelyExtractBody, extractBody } = __nccwpck_require__(4296)
+const { safelyExtractBody, extractBody } = __nccwpck_require__(5816)
 const {
   redirectStatusSet,
   nullBodyStatus,
   safeMethodsSet,
   requestBodyHeader,
   subresourceSet
-} = __nccwpck_require__(2539)
+} = __nccwpck_require__(9675)
 const EE = __nccwpck_require__(8474)
 const { Readable, pipeline, finished, isErrored, isReadable } = __nccwpck_require__(7075)
-const { addAbortListener, bufferToLowerCasedHeaderName } = __nccwpck_require__(4108)
-const { dataURLProcessor, serializeAMimeType, minimizeSupportedMimeType } = __nccwpck_require__(3200)
-const { getGlobalDispatcher } = __nccwpck_require__(1689)
-const { webidl } = __nccwpck_require__(1555)
+const { addAbortListener, bufferToLowerCasedHeaderName } = __nccwpck_require__(6364)
+const { SocketError } = __nccwpck_require__(5767)
+const { dataURLProcessor, serializeAMimeType, minimizeSupportedMimeType } = __nccwpck_require__(8400)
+const { getGlobalDispatcher } = __nccwpck_require__(9145)
+const { webidl } = __nccwpck_require__(4483)
 const { STATUS_CODES } = __nccwpck_require__(7067)
-const { bytesMatch } = __nccwpck_require__(5542)
-const { isomorphicEncode } = __nccwpck_require__(7208)
+const { bytesMatch } = __nccwpck_require__(4790)
+const { isomorphicEncode } = __nccwpck_require__(1720)
 
 const GET_OR_HEAD = ['GET', 'HEAD']
 
@@ -40594,11 +44617,8 @@ async function mainFetch (fetchParams, recursive) {
 // https://fetch.spec.whatwg.org/#concept-scheme-fetch
 // given a fetch params fetchParams
 function schemeFetch (fetchParams) {
-  // Note: since the connection is destroyed on redirect, which sets fetchParams to a
-  // cancelled state, we do not want this condition to trigger *unless* there have been
-  // no redirects. See https://github.com/nodejs/undici/issues/1776
   // 1. If fetchParams is canceled, then return the appropriate network error for fetchParams.
-  if (isCancelled(fetchParams) && fetchParams.request.redirectCount === 0) {
+  if (isCancelled(fetchParams)) {
     return Promise.resolve(makeAppropriateNetworkError(fetchParams))
   }
 
@@ -40812,18 +44832,18 @@ function fetchFinale (fetchParams, response) {
   //    `Server-Timing` from response’s internal response’s header list.
   // TODO
 
-  // 3. Let processResponseEndOfBody be the following steps:
+  // 3. If fetchParams’s request’s destination is "document", then set fetchParams’s controller’s
+  //    full timing info to fetchParams’s timing info.
+  if (fetchParams.request.destination === 'document') {
+    fetchParams.controller.fullTimingInfo = timingInfo
+  }
+
+  // 4. Let processResponseEndOfBody be the following steps:
   const processResponseEndOfBody = () => {
     // 1. Let unsafeEndTime be the unsafe shared current time.
     const unsafeEndTime = Date.now() // ?
 
-    // 2. If fetchParams’s request’s destination is "document", then set fetchParams’s controller’s
-    //    full timing info to fetchParams’s timing info.
-    if (fetchParams.request.destination === 'document') {
-      fetchParams.controller.fullTimingInfo = timingInfo
-    }
-
-    // 3. Set fetchParams’s controller’s report timing steps to the following steps given a global object global:
+    // 2. Set fetchParams’s controller’s report timing steps to the following steps given a global object global:
     fetchParams.controller.reportTimingSteps = () => {
       // 1. If fetchParams’s request’s URL’s scheme is not an HTTP(S) scheme, then return.
       if (!urlIsHttpHttpsScheme(fetchParams.request.url)) {
@@ -40872,7 +44892,7 @@ function fetchFinale (fetchParams, response) {
       }
     }
 
-    // 4. Let processResponseEndOfBodyTask be the following steps:
+    // 3. Let processResponseEndOfBodyTask be the following steps:
     const processResponseEndOfBodyTask = () => {
       // 1. Set fetchParams’s request’s done flag.
       fetchParams.request.done = true
@@ -40891,11 +44911,11 @@ function fetchFinale (fetchParams, response) {
       }
     }
 
-    // 5. Queue a fetch task to run processResponseEndOfBodyTask with fetchParams’s task destination
+    // 4. Queue a fetch task to run processResponseEndOfBodyTask with fetchParams’s task destination
     queueMicrotask(() => processResponseEndOfBodyTask())
   }
 
-  // 4. If fetchParams’s process response is non-null, then queue a fetch task to run fetchParams’s
+  // 5. If fetchParams’s process response is non-null, then queue a fetch task to run fetchParams’s
   //    process response given response, with fetchParams’s task destination.
   if (fetchParams.processResponse != null) {
     queueMicrotask(() => {
@@ -40904,11 +44924,14 @@ function fetchFinale (fetchParams, response) {
     })
   }
 
-  // 5. Let internalResponse be response, if response is a network error; otherwise response’s internal response.
+  // 6. Let internalResponse be response, if response is a network error; otherwise response’s internal response.
   const internalResponse = response.type === 'error' ? response : (response.internalResponse ?? response)
 
-  // 6. If internalResponse’s body is null, then run processResponseEndOfBody.
-  // 7. Otherwise:
+  // 7. If response is a network error, then run the WebDriver BiDi fetch error steps with request.
+  //    Otherwise, run the WebDriver BiDi response completed steps with request and response.
+
+  // 8. If internalResponse’s body is null, then run processResponseEndOfBody.
+  // 9. Otherwise:
   if (internalResponse.body == null) {
     processResponseEndOfBody()
   } else {
@@ -40925,6 +44948,27 @@ function fetchFinale (fetchParams, response) {
     finished(internalResponse.body.stream, () => {
       processResponseEndOfBody()
     })
+  }
+
+  // 10. If fetchParams’s process response consume body is non-null, then:
+  if (fetchParams.processResponseConsumeBody != null) {
+    // 1. Let processBody given nullOrBytes be this step: run fetchParams’s
+    //    process response consume body given response and nullOrBytes.
+    const processBody = (nullOrBytes) => fetchParams.processResponseConsumeBody(response, nullOrBytes)
+
+    // 2. Let processBodyError be this step: run fetchParams’s process
+    //    response consume body given response and failure.
+    const processBodyError = () => fetchParams.processResponseConsumeBody(response, 'failure')
+
+    // 3. If internalResponse’s body is null, then queue a fetch task to run
+    //    processBody given null, with fetchParams’s task destination.
+    if (internalResponse.body == null) {
+      queueMicrotask(() => processBody(null))
+    } else {
+      // 4. Otherwise, fully read internalResponse’s body given processBody,
+      //    processBodyError, and fetchParams’s task destination.
+      fullyReadBody(internalResponse.body, processBody, processBodyError)
+    }
   }
 }
 
@@ -41001,7 +45045,7 @@ async function httpFetch (fetchParams) {
     // encouraged to, transmit an RST_STREAM frame.
     // See, https://github.com/whatwg/fetch/issues/1288
     if (request.redirect !== 'manual') {
-      fetchParams.controller.connection.destroy(undefined, false)
+      fetchParams.controller.connection.destroy()
     }
 
     // 2. Switch on request’s redirect mode:
@@ -41610,12 +45654,10 @@ async function httpNetworkFetch (
   fetchParams.controller.connection = {
     abort: null,
     destroyed: false,
-    destroy (err, abort = true) {
+    destroy (err) {
       if (!this.destroyed) {
         this.destroyed = true
-        if (abort) {
-          this.abort?.(err ?? new DOMException('The operation was aborted.', 'AbortError'))
-        }
+        this.abort?.(err ?? new DOMException('The operation was aborted.', 'AbortError'))
       }
     }
   }
@@ -42043,8 +46085,6 @@ async function httpNetworkFetch (
             appendHeadersListFromResponseHeaders(headersList, headers, rawHeaders)
             const location = headersList.get('location', true)
 
-            this.body = new Readable({ read: () => controller.resume() })
-
             const willFollow = location && request.redirect === 'follow' &&
               redirectStatusSet.has(status)
 
@@ -42062,7 +46102,7 @@ async function httpNetworkFetch (
               // CVE fix similar to urllib3 (GHSA-gm62-xv2j-4w53) and curl (CVE-2022-32206).
               const maxContentEncodings = 5
               if (codings.length > maxContentEncodings) {
-                reject(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`))
+                controller.abort(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`))
                 return
               }
 
@@ -42091,7 +46131,11 @@ async function httpNetworkFetch (
                 } else if (coding === 'zstd') {
                   decoders.push(zlib.createZstdDecompress({
                     flush: zlib.constants.ZSTD_e_continue,
-                    finishFlush: zlib.constants.ZSTD_e_end
+                    finishFlush: zlib.constants.ZSTD_e_end,
+                    params: {
+                      // https://www.rfc-editor.org/rfc/rfc9659.html#section-3
+                      [zlib.constants.ZSTD_d_windowLogMax]: 23
+                    }
                   }))
                 } else {
                   decoders.length = 0
@@ -42099,6 +46143,8 @@ async function httpNetworkFetch (
                 }
               }
             }
+
+            this.body = new Readable({ read: () => controller.resume() })
 
             const onError = (err) => this.onResponseError(controller, err)
 
@@ -42151,7 +46197,7 @@ async function httpNetworkFetch (
             this.body?.push(null)
           },
 
-          onResponseError (_controller, error) {
+          onResponseError (controller, error) {
             if (this.abort) {
               fetchParams.controller.off('terminated', this.abort)
             }
@@ -42170,7 +46216,9 @@ async function httpNetworkFetch (
 
             this.body?.destroy(error)
 
-            fetchParams.controller.terminate(error)
+            if (!controller?.aborted) {
+              fetchParams.controller.terminate(error)
+            }
 
             reject(error)
           },
@@ -42179,6 +46227,11 @@ async function httpNetworkFetch (
             // We need to support 200 for websocket over h2 as per RFC-8441
             // Absence of session means H1
             if ((socket.session != null && status !== 200) || (socket.session == null && status !== 101)) {
+              if (socket.session != null) {
+                // The server refused the extended CONNECT, and nothing further
+                // will settle this request. Fail the opening handshake here.
+                controller.abort(new SocketError('bad upgrade', null))
+              }
               return false
             }
 
@@ -42211,7 +46264,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 3123:
+/***/ 355:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -42219,15 +46272,15 @@ module.exports = {
 
 
 
-const { extractBody, mixinBody, cloneBody, bodyUnusable } = __nccwpck_require__(4296)
-const { Headers, fill: fillHeaders, HeadersList, setHeadersGuard, getHeadersGuard, setHeadersList, getHeadersList } = __nccwpck_require__(912)
-const util = __nccwpck_require__(4108)
+const { extractBody, mixinBody, cloneBody, bodyUnusable } = __nccwpck_require__(5816)
+const { Headers, fill: fillHeaders, HeadersList, setHeadersGuard, getHeadersGuard, setHeadersList, getHeadersList } = __nccwpck_require__(9008)
+const util = __nccwpck_require__(6364)
 const nodeUtil = __nccwpck_require__(7975)
 const {
   isValidHTTPToken,
   sameOrigin,
   environmentSettingsObject
-} = __nccwpck_require__(1748)
+} = __nccwpck_require__(676)
 const {
   forbiddenMethodsSet,
   corsSafeListedMethodsSet,
@@ -42237,11 +46290,11 @@ const {
   requestCredentials,
   requestCache,
   requestDuplex
-} = __nccwpck_require__(2539)
+} = __nccwpck_require__(9675)
 const { kEnumerableProperty, normalizedMethodRecordsBase, normalizedMethodRecords } = util
-const { webidl } = __nccwpck_require__(1555)
-const { URLSerializer } = __nccwpck_require__(3200)
-const { kConstruct } = __nccwpck_require__(9087)
+const { webidl } = __nccwpck_require__(4483)
+const { URLSerializer } = __nccwpck_require__(8400)
+const { kConstruct } = __nccwpck_require__(3599)
 const assert = __nccwpck_require__(4589)
 const { getMaxListeners, setMaxListeners, defaultMaxListeners } = __nccwpck_require__(8474)
 
@@ -42300,6 +46353,7 @@ function buildAbort (acRef) {
 }
 
 let patchMethodWarning = false
+let setRequestSignal, getRequestDispatcher, setRequestDispatcher, setRequestHeaders, getRequestState, setRequestState, removeRequestAbortListener
 
 // https://fetch.spec.whatwg.org/#request-class
 class Request {
@@ -42817,7 +46871,7 @@ class Request {
 
   // Returns request’s HTTP method, which is "GET" by default.
   get method () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The method getter steps are to return this’s request’s method.
     return this.#state.method
@@ -42825,7 +46879,7 @@ class Request {
 
   // Returns the URL of request as a string.
   get url () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The url getter steps are to return this’s request’s URL, serialized.
     return URLSerializer(this.#state.url)
@@ -42835,7 +46889,7 @@ class Request {
   // Note that headers added in the network layer by the user agent will not
   // be accounted for in this object, e.g., the "Host" header.
   get headers () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The headers getter steps are to return this’s headers.
     return this.#headers
@@ -42844,7 +46898,7 @@ class Request {
   // Returns the kind of resource requested by request, e.g., "document"
   // or "script".
   get destination () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The destination getter are to return this’s request’s destination.
     return this.#state.destination
@@ -42856,7 +46910,7 @@ class Request {
   // during fetching to determine the value of the `Referer` header of the
   // request being made.
   get referrer () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // 1. If this’s request’s referrer is "no-referrer", then return the
     // empty string.
@@ -42878,7 +46932,7 @@ class Request {
   // This is used during fetching to compute the value of the request’s
   // referrer.
   get referrerPolicy () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The referrerPolicy getter steps are to return this’s request’s referrer policy.
     return this.#state.referrerPolicy
@@ -42888,7 +46942,7 @@ class Request {
   // whether the request will use CORS, or will be restricted to same-origin
   // URLs.
   get mode () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The mode getter steps are to return this’s request’s mode.
     return this.#state.mode
@@ -42898,7 +46952,7 @@ class Request {
   // which is a string indicating whether credentials will be sent with the
   // request always, never, or only when sent to a same-origin URL.
   get credentials () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The credentials getter steps are to return this’s request’s credentials mode.
     return this.#state.credentials
@@ -42908,7 +46962,7 @@ class Request {
   // which is a string indicating how the request will
   // interact with the browser’s cache when fetching.
   get cache () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The cache getter steps are to return this’s request’s cache mode.
     return this.#state.cache
@@ -42919,7 +46973,7 @@ class Request {
   // request will be handled during fetching. A request
   // will follow redirects by default.
   get redirect () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The redirect getter steps are to return this’s request’s redirect mode.
     return this.#state.redirect
@@ -42929,7 +46983,7 @@ class Request {
   // cryptographic hash of the resource being fetched. Its value
   // consists of multiple hashes separated by whitespace. [SRI]
   get integrity () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The integrity getter steps are to return this’s request’s integrity
     // metadata.
@@ -42939,7 +46993,7 @@ class Request {
   // Returns a boolean indicating whether or not request can outlive the
   // global in which it was created.
   get keepalive () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The keepalive getter steps are to return this’s request’s keepalive.
     return this.#state.keepalive
@@ -42948,7 +47002,7 @@ class Request {
   // Returns a boolean indicating whether or not request is for a reload
   // navigation.
   get isReloadNavigation () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The isReloadNavigation getter steps are to return true if this’s
     // request’s reload-navigation flag is set; otherwise false.
@@ -42958,7 +47012,7 @@ class Request {
   // Returns a boolean indicating whether or not request is for a history
   // navigation (a.k.a. back-forward navigation).
   get isHistoryNavigation () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The isHistoryNavigation getter steps are to return true if this’s request’s
     // history-navigation flag is set; otherwise false.
@@ -42969,33 +47023,33 @@ class Request {
   // object indicating whether or not request has been aborted, and its
   // abort event handler.
   get signal () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // The signal getter steps are to return this’s signal.
     return this.#signal
   }
 
   get body () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     return this.#state.body ? this.#state.body.stream : null
   }
 
   get bodyUsed () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     return !!this.#state.body && util.isDisturbed(this.#state.body.stream)
   }
 
   get duplex () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     return 'half'
   }
 
   // Returns a clone of request.
   clone () {
-    webidl.brandCheck(this, Request)
+    webidl.brandCheck(this, webidl.is.Request)
 
     // 1. If this is unusable, then throw a TypeError.
     if (bodyUnusable(this.#state)) {
@@ -43057,73 +47111,69 @@ class Request {
     return `Request ${nodeUtil.formatWithOptions(options, properties)}`
   }
 
-  /**
-   * @param {Request} request
-   * @param {AbortSignal} newSignal
-   */
-  static setRequestSignal (request, newSignal) {
-    request.#signal = newSignal
-    return request
-  }
+  static {
+    /**
+     * @param {Request} request
+     * @param {AbortSignal} newSignal
+     */
+    setRequestSignal = (request, newSignal) => {
+      request.#signal = newSignal
+    }
 
-  /**
-   * @param {Request} request
-   */
-  static getRequestDispatcher (request) {
-    return request.#dispatcher
-  }
+    /**
+     * @param {Request} request
+     */
+    getRequestDispatcher = (request) => {
+      return request.#dispatcher
+    }
 
-  /**
-   * @param {Request} request
-   * @param {import('../../dispatcher/dispatcher')} newDispatcher
-   */
-  static setRequestDispatcher (request, newDispatcher) {
-    request.#dispatcher = newDispatcher
-  }
+    /**
+     * @param {Request} request
+     * @param {import('../../dispatcher/dispatcher')} newDispatcher
+     */
+    setRequestDispatcher = (request, newDispatcher) => {
+      request.#dispatcher = newDispatcher
+    }
 
-  /**
-   * @param {Request} request
-   * @param {Headers} newHeaders
-   */
-  static setRequestHeaders (request, newHeaders) {
-    request.#headers = newHeaders
-  }
+    /**
+     * @param {Request} request
+     * @param {Headers} newHeaders
+     */
+    setRequestHeaders = (request, newHeaders) => {
+      request.#headers = newHeaders
+    }
 
-  /**
-   * @param {Request} request
-   */
-  static getRequestState (request) {
-    return request.#state
-  }
+    /**
+     * @param {Request} request
+     */
+    getRequestState = (request) => {
+      return request.#state
+    }
 
-  /**
-   * @param {Request} request
-   * @param {any} newState
-   */
-  static setRequestState (request, newState) {
-    request.#state = newState
-  }
+    /**
+     * @param {Request} request
+     * @param {any} newState
+     */
+    setRequestState = (request, newState) => {
+      request.#state = newState
+    }
 
-  /**
-   * Removes the `abort` listener that makes this request's signal follow the
-   * signal passed to its constructor, if any. Idempotent.
-   * @param {Request} request
-   */
-  static removeRequestAbortListener (request) {
-    request.#abortCleanup?.()
+    /**
+     * Removes the `abort` listener that makes this request's signal follow the
+     * signal passed to its constructor, if any. Idempotent.
+     * @param {Request} request
+     */
+    removeRequestAbortListener = (request) => {
+      request.#abortCleanup?.()
+    }
+
+    webidl.is.Request = (arg) => {
+      return arg != null && typeof arg === 'object' && #state in arg
+    }
   }
 }
 
-const { setRequestSignal, getRequestDispatcher, setRequestDispatcher, setRequestHeaders, getRequestState, setRequestState, removeRequestAbortListener } = Request
-Reflect.deleteProperty(Request, 'setRequestSignal')
-Reflect.deleteProperty(Request, 'getRequestDispatcher')
-Reflect.deleteProperty(Request, 'setRequestDispatcher')
-Reflect.deleteProperty(Request, 'setRequestHeaders')
-Reflect.deleteProperty(Request, 'getRequestState')
-Reflect.deleteProperty(Request, 'setRequestState')
-Reflect.deleteProperty(Request, 'removeRequestAbortListener')
-
-mixinBody(Request, getRequestState)
+mixinBody(Request, getRequestState, webidl.is.Request)
 
 // https://fetch.spec.whatwg.org/#requests
 function makeRequest (init) {
@@ -43140,7 +47190,7 @@ function makeRequest (init) {
     serviceWorkers: init.serviceWorkers ?? 'all',
     initiator: init.initiator ?? '',
     destination: init.destination ?? '',
-    priority: init.priority ?? null,
+    priority: init.priority ?? 'auto',
     origin: init.origin ?? 'client',
     policyContainer: init.policyContainer ?? 'client',
     referrer: init.referrer ?? 'client',
@@ -43237,8 +47287,6 @@ Object.defineProperties(Request.prototype, {
     configurable: true
   }
 })
-
-webidl.is.Request = webidl.util.MakeTypeAssertion(Request)
 
 /**
  * @param {*} V
@@ -43346,8 +47394,7 @@ webidl.converters.RequestInit = webidl.dictionaryConverter([
   {
     key: 'priority',
     converter: webidl.converters.DOMString,
-    allowedValues: ['high', 'low', 'auto'],
-    defaultValue: () => 'auto'
+    allowedValues: ['high', 'low', 'auto']
   }
 ])
 
@@ -43364,15 +47411,15 @@ module.exports = {
 
 /***/ }),
 
-/***/ 4263:
+/***/ 3751:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { Headers, HeadersList, fill, getHeadersGuard, setHeadersGuard, setHeadersList } = __nccwpck_require__(912)
-const { extractBody, cloneBody, mixinBody, streamRegistry, bodyUnusable } = __nccwpck_require__(4296)
-const util = __nccwpck_require__(4108)
+const { Headers, HeadersList, fill, getHeadersGuard, setHeadersGuard, setHeadersList } = __nccwpck_require__(9008)
+const { extractBody, cloneBody, mixinBody, streamRegistry, bodyUnusable } = __nccwpck_require__(5816)
+const util = __nccwpck_require__(6364)
 const nodeUtil = __nccwpck_require__(7975)
 const { kEnumerableProperty } = util
 const {
@@ -43381,18 +47428,19 @@ const {
   isAborted,
   isErrorLike,
   environmentSettingsObject: relevantRealm
-} = __nccwpck_require__(1748)
+} = __nccwpck_require__(676)
 const {
   redirectStatusSet,
   nullBodyStatus
-} = __nccwpck_require__(2539)
-const { webidl } = __nccwpck_require__(1555)
-const { URLSerializer } = __nccwpck_require__(3200)
-const { kConstruct } = __nccwpck_require__(9087)
+} = __nccwpck_require__(9675)
+const { webidl } = __nccwpck_require__(4483)
+const { URLSerializer } = __nccwpck_require__(8400)
+const { kConstruct } = __nccwpck_require__(3599)
 const assert = __nccwpck_require__(4589)
-const { isomorphicEncode, serializeJavascriptValueToJSONString } = __nccwpck_require__(7208)
+const { isomorphicEncode, serializeJavascriptValueToJSONString } = __nccwpck_require__(1720)
 
 const textEncoder = new TextEncoder('utf-8')
+let getResponseHeaders, setResponseHeaders, getResponseState, setResponseState
 
 // https://fetch.spec.whatwg.org/#response-class
 class Response {
@@ -43515,7 +47563,7 @@ class Response {
 
   // Returns response’s type, e.g., "cors".
   get type () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // The type getter steps are to return this’s response’s type.
     return this.#state.type
@@ -43523,7 +47571,7 @@ class Response {
 
   // Returns response’s URL, if it has one; otherwise the empty string.
   get url () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     const urlList = this.#state.urlList
 
@@ -43541,7 +47589,7 @@ class Response {
 
   // Returns whether response was obtained through a redirect.
   get redirected () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // The redirected getter steps are to return true if this’s response’s URL
     // list has more than one item; otherwise false.
@@ -43550,7 +47598,7 @@ class Response {
 
   // Returns response’s status.
   get status () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // The status getter steps are to return this’s response’s status.
     return this.#state.status
@@ -43558,7 +47606,7 @@ class Response {
 
   // Returns whether response’s status is an ok status.
   get ok () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // The ok getter steps are to return true if this’s response’s status is an
     // ok status; otherwise false.
@@ -43567,7 +47615,7 @@ class Response {
 
   // Returns response’s status message.
   get statusText () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // The statusText getter steps are to return this’s response’s status
     // message.
@@ -43576,27 +47624,27 @@ class Response {
 
   // Returns response’s headers as Headers.
   get headers () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // The headers getter steps are to return this’s headers.
     return this.#headers
   }
 
   get body () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     return this.#state.body ? this.#state.body.stream : null
   }
 
   get bodyUsed () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     return !!this.#state.body && util.isDisturbed(this.#state.body.stream)
   }
 
   // Returns a clone of response.
   clone () {
-    webidl.brandCheck(this, Response)
+    webidl.brandCheck(this, webidl.is.Response)
 
     // 1. If this is unusable, then throw a TypeError.
     if (bodyUnusable(this.#state)) {
@@ -43642,44 +47690,44 @@ class Response {
     return `Response ${nodeUtil.formatWithOptions(options, properties)}`
   }
 
-  /**
-   * @param {Response} response
-   */
-  static getResponseHeaders (response) {
-    return response.#headers
-  }
+  static {
+    /**
+     * @param {Response} response
+     */
+    getResponseHeaders = (response) => {
+      return response.#headers
+    }
 
-  /**
-   * @param {Response} response
-   * @param {Headers} newHeaders
-   */
-  static setResponseHeaders (response, newHeaders) {
-    response.#headers = newHeaders
-  }
+    /**
+     * @param {Response} response
+     * @param {Headers} newHeaders
+     */
+    setResponseHeaders = (response, newHeaders) => {
+      response.#headers = newHeaders
+    }
 
-  /**
-   * @param {Response} response
-   */
-  static getResponseState (response) {
-    return response.#state
-  }
+    /**
+     * @param {Response} response
+     */
+    getResponseState = (response) => {
+      return response.#state
+    }
 
-  /**
-   * @param {Response} response
-   * @param {any} newState
-   */
-  static setResponseState (response, newState) {
-    response.#state = newState
+    /**
+     * @param {Response} response
+     * @param {any} newState
+     */
+    setResponseState = (response, newState) => {
+      response.#state = newState
+    }
+
+    webidl.is.Response = (arg) => {
+      return arg != null && typeof arg === 'object' && #state in arg
+    }
   }
 }
 
-const { getResponseHeaders, setResponseHeaders, getResponseState, setResponseState } = Response
-Reflect.deleteProperty(Response, 'getResponseHeaders')
-Reflect.deleteProperty(Response, 'setResponseHeaders')
-Reflect.deleteProperty(Response, 'getResponseState')
-Reflect.deleteProperty(Response, 'setResponseState')
-
-mixinBody(Response, getResponseState)
+mixinBody(Response, getResponseState, webidl.is.Response)
 
 Object.defineProperties(Response.prototype, {
   type: kEnumerableProperty,
@@ -43994,8 +48042,6 @@ webidl.converters.ResponseInit = webidl.dictionaryConverter([
   }
 ])
 
-webidl.is.Response = webidl.util.MakeTypeAssertion(Response)
-
 module.exports = {
   isNetworkError,
   makeNetworkError,
@@ -44011,7 +48057,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1748:
+/***/ 676:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -44019,15 +48065,15 @@ module.exports = {
 
 const { Transform } = __nccwpck_require__(7075)
 const zlib = __nccwpck_require__(8522)
-const { redirectStatusSet, referrerPolicyTokens, badPortsSet } = __nccwpck_require__(2539)
-const { getGlobalOrigin } = __nccwpck_require__(8943)
-const { collectAnHTTPQuotedString, parseMIMEType } = __nccwpck_require__(3200)
+const { redirectStatusSet, referrerPolicyTokens, badPortsSet } = __nccwpck_require__(9675)
+const { getGlobalOrigin } = __nccwpck_require__(5743)
+const { collectAnHTTPQuotedString, parseMIMEType } = __nccwpck_require__(8400)
 const { performance } = __nccwpck_require__(643)
-const { ReadableStreamFrom, isValidHTTPToken, normalizedMethodRecordsBase } = __nccwpck_require__(4108)
+const { isValidHTTPToken, normalizedMethodRecordsBase } = __nccwpck_require__(6364)
 const assert = __nccwpck_require__(4589)
 const { isUint8Array } = __nccwpck_require__(3429)
-const { webidl } = __nccwpck_require__(1555)
-const { isomorphicEncode, collectASequenceOfCodePoints, removeChars } = __nccwpck_require__(7208)
+const { webidl } = __nccwpck_require__(4483)
+const { isomorphicEncode, collectASequenceOfCodePoints, removeChars } = __nccwpck_require__(1720)
 
 function responseURL (response) {
   // https://fetch.spec.whatwg.org/#responses
@@ -44244,14 +48290,19 @@ function TAOCheck () {
   return 'success'
 }
 
+// https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-append-the-fetch-metadata-headers-for-a-request
 function appendFetchMetadata (httpRequest) {
+  //  1. If r’s url is not a potentially trustworthy URL, return.
+  if (!isURLPotentiallyTrustworthy(requestCurrentURL(httpRequest))) {
+    return
+  }
+
   //  https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-dest-header
   //  TODO
 
   //  https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-mode-header
 
   //  1. Assert: r’s url is a potentially trustworthy URL.
-  //  TODO
 
   //  2. Let header be a Structured Header whose value is a token.
   let header = null
@@ -44884,8 +48935,9 @@ function createIterator (name, kInternalIterator, keyIndex = 0, valueIndex = 1) 
  * @param {(target: any) => any} kInternalIterator
  * @param {string | number} [keyIndex]
  * @param {string | number} [valueIndex]
+ * @param {import('../../../types/webidl').WebidlIsFunction} brandCheck
  */
-function iteratorMixin (name, object, kInternalIterator, keyIndex = 0, valueIndex = 1) {
+function iteratorMixin (name, object, kInternalIterator, keyIndex = 0, valueIndex = 1, brandCheck) {
   const makeIterator = createIterator(name, kInternalIterator, keyIndex, valueIndex)
 
   const properties = {
@@ -44894,7 +48946,7 @@ function iteratorMixin (name, object, kInternalIterator, keyIndex = 0, valueInde
       enumerable: true,
       configurable: true,
       value: function keys () {
-        webidl.brandCheck(this, object)
+        webidl.brandCheck(this, brandCheck)
         return makeIterator(this, 'key')
       }
     },
@@ -44903,7 +48955,7 @@ function iteratorMixin (name, object, kInternalIterator, keyIndex = 0, valueInde
       enumerable: true,
       configurable: true,
       value: function values () {
-        webidl.brandCheck(this, object)
+        webidl.brandCheck(this, brandCheck)
         return makeIterator(this, 'value')
       }
     },
@@ -44912,7 +48964,7 @@ function iteratorMixin (name, object, kInternalIterator, keyIndex = 0, valueInde
       enumerable: true,
       configurable: true,
       value: function entries () {
-        webidl.brandCheck(this, object)
+        webidl.brandCheck(this, brandCheck)
         return makeIterator(this, 'key+value')
       }
     },
@@ -44921,7 +48973,7 @@ function iteratorMixin (name, object, kInternalIterator, keyIndex = 0, valueInde
       enumerable: true,
       configurable: true,
       value: function forEach (callbackfn, thisArg = globalThis) {
-        webidl.brandCheck(this, object)
+        webidl.brandCheck(this, brandCheck)
         webidl.argumentLengthCheck(arguments, 1, `${name}.forEach`)
         if (typeof callbackfn !== 'function') {
           throw new TypeError(
@@ -45495,7 +49547,6 @@ module.exports = {
   isAborted,
   isCancelled,
   isValidEncodedURL,
-  ReadableStreamFrom,
   tryUpgradeRequestToAPotentiallyTrustworthyURL,
   clampAndCoarsenConnectionTimingInfo,
   coarsenedSharedCurrentTime,
@@ -45544,14 +49595,14 @@ module.exports = {
 
 /***/ }),
 
-/***/ 7208:
+/***/ 1720:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const assert = __nccwpck_require__(4589)
-const { utf8DecodeBytes } = __nccwpck_require__(5368)
+const { utf8DecodeBytes } = __nccwpck_require__(360)
 
 /**
  * @param {(char: string) => boolean} condition
@@ -45706,6 +49757,20 @@ function isomorphicEncode (input) {
   return input
 }
 
+const nonASCIIRegex = /[^\x00-\x7F]/ // eslint-disable-line no-control-regex
+
+/**
+ * @param {string} str
+ * @returns {string}
+ *
+ * @see https://infra.spec.whatwg.org/#ascii-lowercase
+ */
+function asciiLowercase (str) {
+  return nonASCIIRegex.test(str)
+    ? str.replace(/[A-Z]+/g, (upper) => upper.toLowerCase())
+    : str.toLowerCase()
+}
+
 /**
  * @see https://infra.spec.whatwg.org/#parse-json-bytes-to-a-javascript-value
  * @param {Uint8Array} bytes
@@ -45742,7 +49807,7 @@ function removeChars (str, leading, trailing, predicate) {
   }
 
   if (trailing) {
-    while (trail > 0 && predicate(str.charCodeAt(trail))) trail--
+    while (trail >= lead && predicate(str.charCodeAt(trail))) trail--
   }
 
   return lead === 0 && trail === str.length - 1 ? str : str.slice(lead, trail + 1)
@@ -45766,6 +49831,7 @@ function serializeJavascriptValueToJSONString (value) {
 }
 
 module.exports = {
+  asciiLowercase,
   collectASequenceOfCodePoints,
   collectASequenceOfCodePointsFast,
   forgivingBase64,
@@ -45781,14 +49847,15 @@ module.exports = {
 
 /***/ }),
 
-/***/ 5542:
+/***/ 4790:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const assert = __nccwpck_require__(4589)
-const { runtimeFeatures } = __nccwpck_require__(8045)
+const { runtimeFeatures } = __nccwpck_require__(9021)
+const { asciiLowercase } = __nccwpck_require__(1720)
 
 /**
  * @typedef {object} Metadata
@@ -45853,14 +49920,12 @@ const getSRIHashAlgorithmIndex = /** @type {GetSRIHashAlgorithmIndex} */ (Map.pr
 
 /**
  * @typedef IsValidSRIHashAlgorithm
+ * @see https://w3c.github.io/webappsec-subresource-integrity/#valid-sri-hash-algorithm-token
  * @type {(algorithm: string) => algorithm is SRIHashAlgorithm}
  * @param {*} algorithm
  * @returns {algorithm is SRIHashAlgorithm}
  */
-
-const isValidSRIHashAlgorithm = /** @type {IsValidSRIHashAlgorithm} */ (
-  Map.prototype.has.bind(validSRIHashAlgorithmTokenSet)
-)
+const isValidSRIHashAlgorithm = (algorithm) => validSRIHashAlgorithmTokenSet.has(asciiLowercase(algorithm))
 
 /**
  * @param {Uint8Array} bytes
@@ -46016,7 +50081,8 @@ function parseMetadata (metadata) {
     // 8. Let metadata be the ordered map
     // «["alg" → algorithm, "val" → base64-value]».
     const metadata = {
-      alg: algorithm,
+      // Possible spec bug?
+      alg: asciiLowercase(algorithm),
       val: base64Value
     }
 
@@ -46096,7 +50162,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 1555:
+/***/ 4483:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -46128,9 +50194,9 @@ const webidl = {
 /**
  * @description Instantiate an error.
  *
- * @param {Object} opts
- * @param {string} opts.header
- * @param {string} opts.message
+ * @param {Object} message
+ * @param {string} message.header
+ * @param {string} message.message
  * @returns {TypeError}
  */
 webidl.errors.exception = function (message) {
@@ -46175,23 +50241,11 @@ webidl.errors.invalidArgument = function (context) {
 }
 
 // https://webidl.spec.whatwg.org/#implements
-webidl.brandCheck = function (V, I) {
-  if (!FunctionPrototypeSymbolHasInstance(I, V)) {
+webidl.brandCheck = function (V, is) {
+  if (!is(V)) {
     const err = new TypeError('Illegal invocation')
     err.code = 'ERR_INVALID_THIS' // node compat.
     throw err
-  }
-}
-
-webidl.brandCheckMultiple = function (List) {
-  const prototypes = List.map((c) => webidl.util.MakeTypeAssertion(c))
-
-  return (V) => {
-    if (prototypes.every(typeCheck => !typeCheck(V))) {
-      const err = new TypeError('Illegal invocation')
-      err.code = 'ERR_INVALID_THIS' // node compat.
-      throw err
-    }
   }
 }
 
@@ -47108,21 +51162,21 @@ module.exports = {
 
 /***/ }),
 
-/***/ 6453:
+/***/ 3461:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { uid, states, sentCloseFrameState, emptyBuffer, opcodes } = __nccwpck_require__(124)
-const { parseExtensions, isClosed, isClosing, isEstablished, isConnecting, validateCloseCodeAndReason } = __nccwpck_require__(533)
-const { makeRequest } = __nccwpck_require__(3123)
-const { fetching } = __nccwpck_require__(2986)
-const { Headers, getHeadersList } = __nccwpck_require__(912)
-const { getDecodeSplit } = __nccwpck_require__(1748)
-const { WebsocketFrameSend } = __nccwpck_require__(4844)
+const { uid, states, sentCloseFrameState, emptyBuffer, opcodes } = __nccwpck_require__(8028)
+const { parseExtensions, isClosed, isClosing, isEstablished, isConnecting, validateCloseCodeAndReason } = __nccwpck_require__(8389)
+const { makeRequest } = __nccwpck_require__(355)
+const { fetching } = __nccwpck_require__(5498)
+const { Headers, getHeadersList } = __nccwpck_require__(9008)
+const { getDecodeSplit } = __nccwpck_require__(676)
+const { WebsocketFrameSend } = __nccwpck_require__(4044)
 const assert = __nccwpck_require__(4589)
-const { runtimeFeatures } = __nccwpck_require__(8045)
+const { runtimeFeatures } = __nccwpck_require__(9021)
 
 const crypto = runtimeFeatures.has('crypto')
   ? __nccwpck_require__(7598)
@@ -47215,13 +51269,13 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
         // The presence of a session property on the socket indicates HTTP2
         // HTTP1
         if (response.socket?.session == null) {
-          failWebsocketConnection(handler, 1002, 'Received network error or non-101 status code.', response.error)
+          failHandshake(handler, response, 1002, 'Received network error or non-101 status code.', response.error)
           return
         }
 
         // HTTP2
         if (response.status !== 200) {
-          failWebsocketConnection(handler, 1002, 'Received network error or non-200 status code.', response.error)
+          failHandshake(handler, response, 1002, 'Received network error or non-200 status code.', response.error)
           return
         }
       }
@@ -47236,7 +51290,7 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
       //    header list results in null, failure, or the empty byte
       //    sequence, then fail the WebSocket connection.
       if (protocols.length !== 0 && !response.headersList.get('Sec-WebSocket-Protocol')) {
-        failWebsocketConnection(handler, 1002, 'Server did not respond with sent protocols.')
+        failHandshake(handler, response, 1002, 'Server did not respond with sent protocols.')
         return
       }
 
@@ -47252,7 +51306,7 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
       //    _Fail the WebSocket Connection_.
       //    For H2, no upgrade header is expected.
       if (response.socket.session == null && response.headersList.get('Upgrade')?.toLowerCase() !== 'websocket') {
-        failWebsocketConnection(handler, 1002, 'Server did not set Upgrade header to "websocket".')
+        failHandshake(handler, response, 1002, 'Server did not set Upgrade header to "websocket".')
         return
       }
 
@@ -47262,7 +51316,7 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
       //    MUST _Fail the WebSocket Connection_.
       //    For H2, no connection header is expected.
       if (response.socket.session == null && response.headersList.get('Connection')?.toLowerCase() !== 'upgrade') {
-        failWebsocketConnection(handler, 1002, 'Server did not set Connection header to "upgrade".')
+        failHandshake(handler, response, 1002, 'Server did not set Connection header to "upgrade".')
         return
       }
 
@@ -47273,11 +51327,15 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
       //    E914-47DA-95CA-C5AB0DC85B11" but ignoring any leading and
       //    trailing whitespace, the client MUST _Fail the WebSocket
       //    Connection_.
-      const secWSAccept = response.headersList.get('Sec-WebSocket-Accept')
-      const digest = crypto.hash('sha1', keyValue + uid, 'base64')
-      if (secWSAccept !== digest) {
-        failWebsocketConnection(handler, 1002, 'Incorrect hash received in Sec-WebSocket-Accept header.')
-        return
+      //    For H2, implementations "do not do the processing of the Sec-WebSocket-Key and
+      //    Sec-WebSocket-Accept header fields". https://datatracker.ietf.org/doc/html/rfc8441#section-5
+      if (response.socket.session == null) {
+        const secWSAccept = response.headersList.get('Sec-WebSocket-Accept')
+        const digest = crypto.hash('sha1', keyValue + uid, 'base64')
+        if (secWSAccept !== digest) {
+          failHandshake(handler, response, 1002, 'Incorrect hash received in Sec-WebSocket-Accept header.')
+          return
+        }
       }
 
       // 5. If the response includes a |Sec-WebSocket-Extensions| header
@@ -47294,7 +51352,7 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
         extensions = parseExtensions(secExtension)
 
         if (!extensions.has('permessage-deflate')) {
-          failWebsocketConnection(handler, 1002, 'Sec-WebSocket-Extensions header does not match.')
+          failHandshake(handler, response, 1002, 'Sec-WebSocket-Extensions header does not match.')
           return
         }
       }
@@ -47314,10 +51372,17 @@ function establishWebSocketConnection (url, protocols, client, handler, options)
         // is specified, the server needs to include the same field and one of
         // the selected subprotocol values in its response for the connection to
         // be established.
-        if (!requestProtocols.includes(secProtocol)) {
-          failWebsocketConnection(handler, 1002, 'Protocol was not set in the opening handshake.')
+        if (requestProtocols === null || !requestProtocols.includes(secProtocol)) {
+          failHandshake(handler, response, 1002, 'Protocol was not set in the opening handshake.')
           return
         }
+      }
+
+      // For H2, "Orderly TCP-level closures are represented as END_STREAM flags", so
+      // end our side of the stream when the server ends its side, as a TCP socket would.
+      // https://datatracker.ietf.org/doc/html/rfc8441#section-5
+      if (response.socket.session != null) {
+        response.socket.allowHalfOpen = false
       }
 
       response.socket.on('data', handler.onSocketData)
@@ -47410,6 +51475,16 @@ function closeWebSocketConnection (object, code, reason, validate = false) {
   }
 }
 
+function failHandshake (handler, response, code, reason, cause) {
+  // The H2 upgrade request has already completed and handed off its stream.
+  // Aborting the request cannot close that stream after handshake validation fails.
+  if (response.socket?.session != null && !response.socket.destroyed) {
+    response.socket.destroy()
+  }
+
+  failWebsocketConnection(handler, code, reason, cause)
+}
+
 /**
  * @param {import('./websocket').Handler} handler
  * @param {number} code
@@ -47445,7 +51520,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 124:
+/***/ 8028:
 /***/ ((module) => {
 
 "use strict";
@@ -47579,15 +51654,17 @@ module.exports = {
 
 /***/ }),
 
-/***/ 6344:
+/***/ 1336:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { webidl } = __nccwpck_require__(1555)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
-const { kConstruct } = __nccwpck_require__(9087)
+const { webidl } = __nccwpck_require__(4483)
+const { kEnumerableProperty } = __nccwpck_require__(6364)
+const { kConstruct } = __nccwpck_require__(3599)
+
+let createFastMessageEvent
 
 /**
  * @see https://html.spec.whatwg.org/multipage/comms.html#messageevent
@@ -47615,31 +51692,31 @@ class MessageEvent extends Event {
   }
 
   get data () {
-    webidl.brandCheck(this, MessageEvent)
+    webidl.brandCheck(this, webidl.is.MessageEvent)
 
     return this.#eventInit.data
   }
 
   get origin () {
-    webidl.brandCheck(this, MessageEvent)
+    webidl.brandCheck(this, webidl.is.MessageEvent)
 
     return this.#eventInit.origin
   }
 
   get lastEventId () {
-    webidl.brandCheck(this, MessageEvent)
+    webidl.brandCheck(this, webidl.is.MessageEvent)
 
     return this.#eventInit.lastEventId
   }
 
   get source () {
-    webidl.brandCheck(this, MessageEvent)
+    webidl.brandCheck(this, webidl.is.MessageEvent)
 
     return this.#eventInit.source
   }
 
   get ports () {
-    webidl.brandCheck(this, MessageEvent)
+    webidl.brandCheck(this, webidl.is.MessageEvent)
 
     if (!Object.isFrozen(this.#eventInit.ports)) {
       Object.freeze(this.#eventInit.ports)
@@ -47658,7 +51735,7 @@ class MessageEvent extends Event {
     source = null,
     ports = []
   ) {
-    webidl.brandCheck(this, MessageEvent)
+    webidl.brandCheck(this, webidl.is.MessageEvent)
 
     webidl.argumentLengthCheck(arguments, 1, 'MessageEvent.initMessageEvent')
 
@@ -47667,20 +51744,23 @@ class MessageEvent extends Event {
     })
   }
 
-  static createFastMessageEvent (type, init) {
-    const messageEvent = new MessageEvent(kConstruct, type, init)
-    messageEvent.#eventInit = init
-    messageEvent.#eventInit.data ??= null
-    messageEvent.#eventInit.origin ??= ''
-    messageEvent.#eventInit.lastEventId ??= ''
-    messageEvent.#eventInit.source ??= null
-    messageEvent.#eventInit.ports ??= []
-    return messageEvent
+  static {
+    createFastMessageEvent = (type, init) => {
+      const messageEvent = new MessageEvent(kConstruct, type, init)
+      messageEvent.#eventInit = init
+      messageEvent.#eventInit.data ??= null
+      messageEvent.#eventInit.origin ??= ''
+      messageEvent.#eventInit.lastEventId ??= ''
+      messageEvent.#eventInit.source ??= null
+      messageEvent.#eventInit.ports ??= []
+      return messageEvent
+    }
+
+    webidl.is.MessageEvent = (arg) => {
+      return arg != null && typeof arg === 'object' && #eventInit in arg
+    }
   }
 }
-
-const { createFastMessageEvent } = MessageEvent
-delete MessageEvent.createFastMessageEvent
 
 /**
  * @see https://websockets.spec.whatwg.org/#the-closeevent-interface
@@ -47702,21 +51782,27 @@ class CloseEvent extends Event {
   }
 
   get wasClean () {
-    webidl.brandCheck(this, CloseEvent)
+    webidl.brandCheck(this, webidl.is.CloseEvent)
 
     return this.#eventInit.wasClean
   }
 
   get code () {
-    webidl.brandCheck(this, CloseEvent)
+    webidl.brandCheck(this, webidl.is.CloseEvent)
 
     return this.#eventInit.code
   }
 
   get reason () {
-    webidl.brandCheck(this, CloseEvent)
+    webidl.brandCheck(this, webidl.is.CloseEvent)
 
     return this.#eventInit.reason
+  }
+
+  static {
+    webidl.is.CloseEvent = (arg) => {
+      return arg != null && typeof arg === 'object' && #eventInit in arg
+    }
   }
 }
 
@@ -47738,33 +51824,39 @@ class ErrorEvent extends Event {
   }
 
   get message () {
-    webidl.brandCheck(this, ErrorEvent)
+    webidl.brandCheck(this, webidl.is.ErrorEvent)
 
     return this.#eventInit.message
   }
 
   get filename () {
-    webidl.brandCheck(this, ErrorEvent)
+    webidl.brandCheck(this, webidl.is.ErrorEvent)
 
     return this.#eventInit.filename
   }
 
   get lineno () {
-    webidl.brandCheck(this, ErrorEvent)
+    webidl.brandCheck(this, webidl.is.ErrorEvent)
 
     return this.#eventInit.lineno
   }
 
   get colno () {
-    webidl.brandCheck(this, ErrorEvent)
+    webidl.brandCheck(this, webidl.is.ErrorEvent)
 
     return this.#eventInit.colno
   }
 
   get error () {
-    webidl.brandCheck(this, ErrorEvent)
+    webidl.brandCheck(this, webidl.is.ErrorEvent)
 
     return this.#eventInit.error
+  }
+
+  static {
+    webidl.is.ErrorEvent = (arg) => {
+      return arg != null && typeof arg === 'object' && #eventInit in arg
+    }
   }
 }
 
@@ -47918,14 +52010,14 @@ module.exports = {
 
 /***/ }),
 
-/***/ 4844:
+/***/ 4044:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { runtimeFeatures } = __nccwpck_require__(8045)
-const { maxUnsigned16Bit, opcodes } = __nccwpck_require__(124)
+const { runtimeFeatures } = __nccwpck_require__(9021)
+const { maxUnsigned16Bit, opcodes } = __nccwpck_require__(8028)
 
 const BUFFER_SIZE = 8 * 1024
 
@@ -48053,15 +52145,15 @@ module.exports = {
 
 /***/ }),
 
-/***/ 6073:
+/***/ 8665:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { createInflateRaw, Z_DEFAULT_WINDOWBITS } = __nccwpck_require__(8522)
-const { isValidClientWindowBits } = __nccwpck_require__(533)
-const { MessageSizeExceededError } = __nccwpck_require__(39)
+const { isValidClientWindowBits } = __nccwpck_require__(8389)
+const { MessageSizeExceededError } = __nccwpck_require__(5767)
 
 const tail = Buffer.from([0x00, 0x00, 0xff, 0xff])
 const kBuffer = Symbol('kBuffer')
@@ -48122,7 +52214,12 @@ class PerMessageDeflate {
 
         if (this.#maxPayloadSize > 0 && this.#inflate[kLength] > this.#maxPayloadSize) {
           callback(new MessageSizeExceededError())
+          // The inflater may still hold buffered input that can emit a late
+          // zlib error. Remove the data listener, then deterministically stop
+          // the stream so a subsequent 'error' cannot fire without a listener
+          // (which would terminate the process as an unhandled error event).
           this.#inflate.removeAllListeners()
+          this.#inflate.destroy()
           this.#inflate = null
           return
         }
@@ -48161,7 +52258,7 @@ module.exports = { PerMessageDeflate }
 
 /***/ }),
 
-/***/ 2160:
+/***/ 9872:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -48169,7 +52266,7 @@ module.exports = { PerMessageDeflate }
 
 const { Writable } = __nccwpck_require__(7075)
 const assert = __nccwpck_require__(4589)
-const { parserStates, opcodes, states, emptyBuffer, sentCloseFrameState } = __nccwpck_require__(124)
+const { parserStates, opcodes, states, emptyBuffer, sentCloseFrameState } = __nccwpck_require__(8028)
 const {
   isValidStatusCode,
   isValidOpcode,
@@ -48178,11 +52275,12 @@ const {
   isControlFrame,
   isTextBinaryFrame,
   isContinuationFrame
-} = __nccwpck_require__(533)
-const { failWebsocketConnection } = __nccwpck_require__(6453)
-const { WebsocketFrameSend } = __nccwpck_require__(4844)
-const { PerMessageDeflate } = __nccwpck_require__(6073)
-const { MessageSizeExceededError } = __nccwpck_require__(39)
+} = __nccwpck_require__(8389)
+const { failWebsocketConnection } = __nccwpck_require__(3461)
+const { WebsocketFrameSend } = __nccwpck_require__(4044)
+const { PerMessageDeflate } = __nccwpck_require__(8665)
+const { MessageSizeExceededError } = __nccwpck_require__(5767)
+const { defaultWebSocketMaxFragments, defaultWebSocketMaxPayloadSize } = __nccwpck_require__(2531)
 
 // This code was influenced by ws released under the MIT license.
 // Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
@@ -48215,18 +52313,25 @@ class ByteParser extends Writable {
   /**
    * @param {import('./websocket').Handler} handler
    * @param {Map<string, string>|null} extensions
-   * @param {{ maxPayloadSize?: number }} [options]
+   * @param {{ maxFragments?: number, maxPayloadSize?: number }} [options]
+   *   A missing value uses the default limit; `0` disables the limit.
    */
   constructor (handler, extensions, options = {}) {
     super()
 
     this.#handler = handler
     this.#extensions = extensions == null ? new Map() : extensions
-    this.#maxFragments = options.maxFragments ?? 0
-    this.#maxPayloadSize = options.maxPayloadSize ?? 0
+    // Options come from the dispatcher's `webSocketOptions`, which only
+    // DispatcherBase provides. Fall back to the defaults rather than to no
+    // limit, so RetryAgent, MockAgent or a custom dispatcher can't turn off
+    // the payload and decompression limits by accident.
+    this.#maxFragments = options.maxFragments ?? defaultWebSocketMaxFragments
+    this.#maxPayloadSize = options.maxPayloadSize ?? defaultWebSocketMaxPayloadSize
 
     if (this.#extensions.has('permessage-deflate')) {
-      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions, options))
+      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions, {
+        maxPayloadSize: this.#maxPayloadSize
+      }))
     }
   }
 
@@ -48411,6 +52516,19 @@ class ByteParser extends Writable {
         if (isControlFrame(this.#info.opcode)) {
           this.#loop = this.parseControlFrame(body)
           this.#state = parserStates.INFO
+
+          // If the automatic PONG/CLOSE reply filled the socket's write buffer,
+          // stop parsing and resume on drain so a PING flood cannot grow the
+          // outbound queue without bound.
+          if (this.#loop && this.#handler.socket.writableNeedDrain) {
+            this.#loop = false
+            this.#handler.socket.once('drain', () => {
+              if (this.destroyed) return
+              this.#loop = true
+              this.run(callback)
+            })
+            return
+          }
         } else {
           if (!this.#info.compressed) {
             if (!this.writeFragments(body)) {
@@ -48535,6 +52653,8 @@ class ByteParser extends Writable {
 
   consumeFragments () {
     const fragments = this.#fragments
+
+    this.#info.compressed = false
 
     if (fragments.length === 1) {
       // single fragment
@@ -48676,15 +52796,15 @@ module.exports = {
 
 /***/ }),
 
-/***/ 3768:
+/***/ 6952:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { WebsocketFrameSend } = __nccwpck_require__(4844)
-const { opcodes, sendHints } = __nccwpck_require__(124)
-const FixedQueue = __nccwpck_require__(7800)
+const { WebsocketFrameSend } = __nccwpck_require__(4044)
+const { opcodes, sendHints } = __nccwpck_require__(8028)
+const FixedQueue = __nccwpck_require__(7064)
 
 /**
  * @typedef {object} SendQueueNode
@@ -48793,16 +52913,16 @@ module.exports = { SendQueue }
 
 /***/ }),
 
-/***/ 4339:
+/***/ 9363:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { webidl } = __nccwpck_require__(1555)
-const { validateCloseCodeAndReason } = __nccwpck_require__(533)
-const { kConstruct } = __nccwpck_require__(9087)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
+const { webidl } = __nccwpck_require__(4483)
+const { validateCloseCodeAndReason } = __nccwpck_require__(8389)
+const { kConstruct } = __nccwpck_require__(3599)
+const { kEnumerableProperty } = __nccwpck_require__(6364)
 
 function createInheritableDOMException () {
   // https://github.com/nodejs/node/issues/59677
@@ -48824,6 +52944,8 @@ function createInheritableDOMException () {
     }
   })
 }
+
+let createUnvalidatedWebSocketError
 
 class WebSocketError extends createInheritableDOMException() {
   #closeCode
@@ -48876,16 +52998,19 @@ class WebSocketError extends createInheritableDOMException() {
    * @param {number|null} code
    * @param {string} reason
    */
-  static createUnvalidatedWebSocketError (message, code, reason) {
-    const error = new WebSocketError(message, kConstruct)
-    error.#closeCode = code
-    error.#reason = reason
-    return error
+  static {
+    createUnvalidatedWebSocketError = (message, code, reason) => {
+      const error = new WebSocketError(message, kConstruct)
+      error.#closeCode = code
+      error.#reason = reason
+      return error
+    }
+
+    webidl.is.WebSocketError = (arg) => {
+      return arg != null && typeof arg === 'object' && #reason in arg
+    }
   }
 }
-
-const { createUnvalidatedWebSocketError } = WebSocketError
-delete WebSocketError.createUnvalidatedWebSocketError
 
 Object.defineProperties(WebSocketError.prototype, {
   closeCode: kEnumerableProperty,
@@ -48898,31 +53023,29 @@ Object.defineProperties(WebSocketError.prototype, {
   }
 })
 
-webidl.is.WebSocketError = webidl.util.MakeTypeAssertion(WebSocketError)
-
 module.exports = { WebSocketError, createUnvalidatedWebSocketError }
 
 
 /***/ }),
 
-/***/ 1189:
+/***/ 4133:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { addAbortListener } = __nccwpck_require__(8474)
-const { environmentSettingsObject, readableStreamClose } = __nccwpck_require__(1748)
-const { states, opcodes, sentCloseFrameState } = __nccwpck_require__(124)
-const { webidl } = __nccwpck_require__(1555)
-const { getURLRecord, isValidSubprotocol, isEstablished, utf8Decode } = __nccwpck_require__(533)
-const { establishWebSocketConnection, failWebsocketConnection, closeWebSocketConnection } = __nccwpck_require__(6453)
-const { channels } = __nccwpck_require__(7170)
-const { WebsocketFrameSend } = __nccwpck_require__(4844)
-const { ByteParser } = __nccwpck_require__(2160)
-const { WebSocketError, createUnvalidatedWebSocketError } = __nccwpck_require__(4339)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
-const { utf8DecodeBytes } = __nccwpck_require__(5368)
+const { environmentSettingsObject, readableStreamClose } = __nccwpck_require__(676)
+const { states, opcodes, sentCloseFrameState } = __nccwpck_require__(8028)
+const { webidl } = __nccwpck_require__(4483)
+const { getURLRecord, isValidSubprotocol, isEstablished, utf8Decode } = __nccwpck_require__(8389)
+const { establishWebSocketConnection, failWebsocketConnection, closeWebSocketConnection } = __nccwpck_require__(3461)
+const { channels } = __nccwpck_require__(3906)
+const { WebsocketFrameSend } = __nccwpck_require__(4044)
+const { ByteParser } = __nccwpck_require__(9872)
+const { WebSocketError, createUnvalidatedWebSocketError } = __nccwpck_require__(9363)
+const { kEnumerableProperty } = __nccwpck_require__(6364)
+const { utf8DecodeBytes } = __nccwpck_require__(360)
 
 let emittedExperimentalWarning = false
 
@@ -48945,9 +53068,9 @@ class WebSocketStream {
   /** @type {ReadableStreamDefaultController} */
   #readableStreamController
 
-  // Each WebSocketStream object has an associated writable stream , which is a WritableStream .
-  /** @type {WritableStream} */
-  #writableStream
+  // Retain the controller so the writable stream can be errored while locked.
+  /** @type {WritableStreamDefaultController} */
+  #writableStreamController
 
   // Each WebSocketStream object has an associated boolean handshake aborted , which is initially false.
   #handshakeAborted = false
@@ -48973,7 +53096,9 @@ class WebSocketStream {
 
       this.#handler.socket.destroy()
     },
-    onSocketClose: () => this.#onSocketClose(),
+    // When the WebSocket connection is closed for a WebSocketStream stream, possibly cleanly, the user agent must
+    // queue a global task on the WebSocket task source given stream ’s relevant global object to run the following substeps:
+    onSocketClose: () => queueMicrotask(() => this.#onSocketClose()),
     onPing: () => {},
     onPong: () => {},
 
@@ -49157,11 +53282,15 @@ class WebSocketStream {
       const frame = new WebsocketFrameSend(data)
 
       this.#handler.socket.write(frame.createFrame(opcode), () => {
+        // 6.3. Queue a global task on the WebSocket task source given stream ’s relevant global object to resolve promise with undefined.
         promise.resolve(undefined)
       })
+    } else {
+      // 6.3. Queue a global task on the WebSocket task source given stream ’s relevant global object to resolve promise with undefined.
+      promise.resolve(undefined)
     }
 
-    // 6.3. Queue a global task on the WebSocket task source given stream ’s relevant global object to resolve promise with undefined.
+    // 7. Return promise.
     return promise.promise
   }
 
@@ -49189,7 +53318,7 @@ class WebSocketStream {
     // This is done in the opening handshake.
 
     // 3. Let extensions be the extensions in use .
-    const extensions = parsedExtensions ?? ''
+    const extensions = response.headersList.get('sec-websocket-extensions') ?? ''
 
     // 4. Let protocol be the subprotocol in use .
     const protocol = response.headersList.get('sec-websocket-protocol') ?? ''
@@ -49202,6 +53331,7 @@ class WebSocketStream {
       start: (controller) => {
         this.#readableStreamController = controller
       },
+      pull: () => this.#pull(),
       cancel: (reason) => this.#cancel(reason)
     })
 
@@ -49211,6 +53341,9 @@ class WebSocketStream {
     // 12. Let writable be a new WritableStream .
     // 13. Set up writable with writeAlgorithm , closeAlgorithm , and abortAlgorithm .
     const writable = new WritableStream({
+      start: (controller) => {
+        this.#writableStreamController = controller
+      },
       write: (chunk) => this.#write(chunk),
       close: () => closeWebSocketConnection(this.#handler, null, null),
       abort: (reason) => this.#closeUsingReason(reason)
@@ -49218,9 +53351,6 @@ class WebSocketStream {
 
     // Set stream ’s readable stream to readable .
     this.#readableStream = readable
-
-    // Set stream ’s writable stream to writable .
-    this.#writableStream = writable
 
     // Resolve stream ’s opened promise with WebSocketOpenInfo «[ " extensions " → extensions , " protocol " → protocol , " readable " → readable , " writable " → writable ]».
     this.#openedPromise.resolve({
@@ -49261,6 +53391,9 @@ class WebSocketStream {
     this.#readableStreamController.enqueue(chunk)
 
     // 4. Apply backpressure to the WebSocket.
+    if (this.#readableStreamController.desiredSize <= 0) {
+      this.#handler.socket.pause()
+    }
   }
 
   /** @type {import('../websocket').Handler['onSocketClose']} */
@@ -49294,7 +53427,7 @@ class WebSocketStream {
     // 1006.
     let code = result?.code ?? 1005
 
-    if (!this.#handler.closeState.has(sentCloseFrameState.SENT) && !this.#handler.closeState.has(sentCloseFrameState.RECEIVED)) {
+    if (!this.#handler.closeState.has(sentCloseFrameState.RECEIVED)) {
       code = 1006
     }
 
@@ -49307,9 +53440,7 @@ class WebSocketStream {
       readableStreamClose(this.#readableStreamController)
 
       // 6.2. Error stream ’s writable stream with an " InvalidStateError " DOMException indicating that a closed WebSocketStream cannot be written to.
-      if (!this.#writableStream.locked) {
-        this.#writableStream.abort(new DOMException('A closed WebSocketStream cannot be written to', 'InvalidStateError'))
-      }
+      this.#writableStreamController.error(new DOMException('A closed WebSocketStream cannot be written to', 'InvalidStateError'))
 
       // 6.3. Resolve stream ’s closed promise with WebSocketCloseInfo «[ " closeCode " → code , " reason " → reason ]».
       this.#closedPromise.resolve({
@@ -49326,7 +53457,7 @@ class WebSocketStream {
       this.#readableStreamController?.error(error)
 
       // 7.3. Error stream ’s writable stream with error .
-      this.#writableStream?.abort(error)
+      this.#writableStreamController?.error(error)
 
       // 7.4. Reject stream ’s closed promise with error .
       this.#closedPromise.reject(error)
@@ -49352,6 +53483,11 @@ class WebSocketStream {
     // 4. Close the WebSocket with stream , code , and reasonString . If this throws an exception,
     //    discard code and reasonString and close the WebSocket with stream .
     closeWebSocketConnection(this.#handler, code, reasonString)
+  }
+
+  // To pull bytes from a WebSocketStream stream , if stream is currently applying backpressure, release backpressure.
+  #pull () {
+    this.#handler.socket.resume()
   }
 
   //  To cancel a WebSocketStream stream given reason , close using reason giving stream and reason .
@@ -49411,16 +53547,16 @@ module.exports = { WebSocketStream }
 
 /***/ }),
 
-/***/ 533:
+/***/ 8389:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
-const { states, opcodes } = __nccwpck_require__(124)
+const { states, opcodes } = __nccwpck_require__(8028)
 const { isUtf8 } = __nccwpck_require__(4573)
-const { removeHTTPWhitespace } = __nccwpck_require__(3200)
-const { collectASequenceOfCodePointsFast } = __nccwpck_require__(7208)
+const { removeHTTPWhitespace } = __nccwpck_require__(8400)
+const { collectASequenceOfCodePointsFast } = __nccwpck_require__(1720)
 
 /**
  * @param {number} readyState
@@ -49766,17 +53902,17 @@ module.exports = {
 
 /***/ }),
 
-/***/ 4714:
+/***/ 5930:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
 
 
 const { isArrayBuffer } = __nccwpck_require__(3429)
-const { webidl } = __nccwpck_require__(1555)
-const { URLSerializer } = __nccwpck_require__(3200)
-const { environmentSettingsObject } = __nccwpck_require__(1748)
-const { staticPropertyDescriptors, states, sentCloseFrameState, sendHints, opcodes } = __nccwpck_require__(124)
+const { webidl } = __nccwpck_require__(4483)
+const { URLSerializer } = __nccwpck_require__(8400)
+const { environmentSettingsObject } = __nccwpck_require__(676)
+const { staticPropertyDescriptors, states, sentCloseFrameState, sendHints, opcodes } = __nccwpck_require__(8028)
 const {
   isConnecting,
   isEstablished,
@@ -49787,18 +53923,20 @@ const {
   utf8Decode,
   toArrayBuffer,
   getURLRecord
-} = __nccwpck_require__(533)
-const { establishWebSocketConnection, closeWebSocketConnection, failWebsocketConnection } = __nccwpck_require__(6453)
-const { ByteParser } = __nccwpck_require__(2160)
-const { kEnumerableProperty } = __nccwpck_require__(4108)
-const { getGlobalDispatcher } = __nccwpck_require__(1689)
-const { ErrorEvent, CloseEvent, createFastMessageEvent } = __nccwpck_require__(6344)
-const { SendQueue } = __nccwpck_require__(3768)
-const { WebsocketFrameSend } = __nccwpck_require__(4844)
-const { channels } = __nccwpck_require__(7170)
+} = __nccwpck_require__(8389)
+const { establishWebSocketConnection, closeWebSocketConnection, failWebsocketConnection } = __nccwpck_require__(3461)
+const { ByteParser } = __nccwpck_require__(9872)
+const { kEnumerableProperty } = __nccwpck_require__(6364)
+const { getGlobalDispatcher } = __nccwpck_require__(9145)
+const { ErrorEvent, CloseEvent, createFastMessageEvent } = __nccwpck_require__(1336)
+const { SendQueue } = __nccwpck_require__(6952)
+const { WebsocketFrameSend } = __nccwpck_require__(4044)
+const { channels } = __nccwpck_require__(3906)
 
 const kRef = Symbol.for('nodejs.ref')
 const kUnref = Symbol.for('nodejs.unref')
+
+let ping
 
 function getSocketAddress (socket) {
   if (typeof socket?.address === 'function') {
@@ -49970,16 +54108,14 @@ class WebSocket extends EventTarget {
     this.#binaryType = 'blob'
   }
 
+  // TODO: remove this
   [kRef] () {
-    webidl.brandCheck(this, WebSocket)
-
     this.#refed = true
     this.#handler.socket?.ref?.()
   }
 
+  // TODO: remove this
   [kUnref] () {
-    webidl.brandCheck(this, WebSocket)
-
     this.#refed = false
     this.#handler.socket?.unref?.()
   }
@@ -49990,7 +54126,7 @@ class WebSocket extends EventTarget {
    * @param {string|undefined} reason
    */
   close (code = undefined, reason = undefined) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     const prefix = 'WebSocket.close'
 
@@ -50017,7 +54153,7 @@ class WebSocket extends EventTarget {
    * @param {NodeJS.TypedArray|ArrayBuffer|Blob|string} data
    */
   send (data) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     const prefix = 'WebSocket.send'
     webidl.argumentLengthCheck(arguments, 1, prefix)
@@ -50111,45 +54247,45 @@ class WebSocket extends EventTarget {
   }
 
   get readyState () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     // The readyState getter steps are to return this's ready state.
     return this.#handler.readyState
   }
 
   get bufferedAmount () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#bufferedAmount
   }
 
   get url () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     // The url getter steps are to return this's url, serialized.
     return URLSerializer(this.#url)
   }
 
   get extensions () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#extensions
   }
 
   get protocol () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#protocol
   }
 
   get onopen () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#events.open
   }
 
   set onopen (fn) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     if (this.#events.open) {
       this.removeEventListener('open', this.#events.open)
@@ -50166,13 +54302,13 @@ class WebSocket extends EventTarget {
   }
 
   get onerror () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#events.error
   }
 
   set onerror (fn) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     if (this.#events.error) {
       this.removeEventListener('error', this.#events.error)
@@ -50189,13 +54325,13 @@ class WebSocket extends EventTarget {
   }
 
   get onclose () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#events.close
   }
 
   set onclose (fn) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     if (this.#events.close) {
       this.removeEventListener('close', this.#events.close)
@@ -50212,13 +54348,13 @@ class WebSocket extends EventTarget {
   }
 
   get onmessage () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#events.message
   }
 
   set onmessage (fn) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     if (this.#events.message) {
       this.removeEventListener('message', this.#events.message)
@@ -50235,13 +54371,13 @@ class WebSocket extends EventTarget {
   }
 
   get binaryType () {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     return this.#binaryType
   }
 
   set binaryType (type) {
-    webidl.brandCheck(this, WebSocket)
+    webidl.brandCheck(this, webidl.is.WebSocket)
 
     if (type !== 'blob' && type !== 'arraybuffer') {
       this.#binaryType = 'blob'
@@ -50426,32 +54562,35 @@ class WebSocket extends EventTarget {
     }
   }
 
-  /**
-   * @param {WebSocket} ws
-   * @param {Buffer|undefined} buffer
-   */
-  static ping (ws, buffer) {
-    if (Buffer.isBuffer(buffer)) {
-      if (buffer.length > 125) {
-        throw new TypeError('A PING frame cannot have a body larger than 125 bytes.')
+  static {
+    /**
+     * @param {WebSocket} ws
+     * @param {Buffer|undefined} buffer
+     */
+    ping = (ws, buffer) => {
+      if (Buffer.isBuffer(buffer)) {
+        if (buffer.length > 125) {
+          throw new TypeError('A PING frame cannot have a body larger than 125 bytes.')
+        }
+      } else if (buffer !== undefined) {
+        throw new TypeError('Expected buffer payload')
       }
-    } else if (buffer !== undefined) {
-      throw new TypeError('Expected buffer payload')
+
+      // An endpoint MAY send a Ping frame any time after the connection is
+      // established and before the connection is closed.
+      const readyState = ws.#handler.readyState
+
+      if (isEstablished(readyState) && !isClosing(readyState) && !isClosed(readyState)) {
+        const frame = new WebsocketFrameSend(buffer)
+        ws.#handler.socket.write(frame.createFrame(opcodes.PING))
+      }
     }
 
-    // An endpoint MAY send a Ping frame any time after the connection is
-    // established and before the connection is closed.
-    const readyState = ws.#handler.readyState
-
-    if (isEstablished(readyState) && !isClosing(readyState) && !isClosed(readyState)) {
-      const frame = new WebsocketFrameSend(buffer)
-      ws.#handler.socket.write(frame.createFrame(opcodes.PING))
+    webidl.is.WebSocket = (arg) => {
+      return arg != null && typeof arg === 'object' && #handler in arg
     }
   }
 }
-
-const { ping } = WebSocket
-Reflect.deleteProperty(WebSocket, 'ping')
 
 // https://websockets.spec.whatwg.org/#dom-websocket-connecting
 WebSocket.CONNECTING = WebSocket.prototype.CONNECTING = states.CONNECTING
@@ -50802,14 +54941,6 @@ module.exports = require("os");
 
 /***/ }),
 
-/***/ 6928:
-/***/ ((module) => {
-
-"use strict";
-module.exports = require("path");
-
-/***/ }),
-
 /***/ 4756:
 /***/ ((module) => {
 
@@ -50884,369 +55015,7 @@ exports.w = {
 
 /***/ }),
 
-/***/ 8350:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.range = exports.balanced = void 0;
-const balanced = (a, b, str) => {
-    const ma = a instanceof RegExp ? maybeMatch(a, str) : a;
-    const mb = b instanceof RegExp ? maybeMatch(b, str) : b;
-    const r = ma !== null && mb != null && (0, exports.range)(ma, mb, str);
-    return (r && {
-        start: r[0],
-        end: r[1],
-        pre: str.slice(0, r[0]),
-        body: str.slice(r[0] + ma.length, r[1]),
-        post: str.slice(r[1] + mb.length),
-    });
-};
-exports.balanced = balanced;
-const maybeMatch = (reg, str) => {
-    const m = str.match(reg);
-    return m ? m[0] : null;
-};
-const range = (a, b, str) => {
-    let begs, beg, left, right = undefined, result;
-    let ai = str.indexOf(a);
-    let bi = str.indexOf(b, ai + 1);
-    let i = ai;
-    if (ai >= 0 && bi > 0) {
-        if (a === b) {
-            return [ai, bi];
-        }
-        begs = [];
-        left = str.length;
-        while (i >= 0 && !result) {
-            if (i === ai) {
-                begs.push(i);
-                ai = str.indexOf(a, i + 1);
-            }
-            else if (begs.length === 1) {
-                const r = begs.pop();
-                if (r !== undefined)
-                    result = [r, bi];
-            }
-            else {
-                beg = begs.pop();
-                if (beg !== undefined && beg < left) {
-                    left = beg;
-                    right = bi;
-                }
-                bi = str.indexOf(b, i + 1);
-            }
-            i = ai < bi && ai >= 0 ? ai : bi;
-        }
-        if (begs.length && right !== undefined) {
-            result = [left, right];
-        }
-    }
-    return result;
-};
-exports.range = range;
-//# sourceMappingURL=index.js.map
-
-/***/ }),
-
-/***/ 7320:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.EXPANSION_MAX_LENGTH = exports.EXPANSION_MAX = void 0;
-exports.expand = expand;
-const balanced_match_1 = __nccwpck_require__(8350);
-const escSlash = '\0SLASH' + Math.random() + '\0';
-const escOpen = '\0OPEN' + Math.random() + '\0';
-const escClose = '\0CLOSE' + Math.random() + '\0';
-const escComma = '\0COMMA' + Math.random() + '\0';
-const escPeriod = '\0PERIOD' + Math.random() + '\0';
-const escSlashPattern = new RegExp(escSlash, 'g');
-const escOpenPattern = new RegExp(escOpen, 'g');
-const escClosePattern = new RegExp(escClose, 'g');
-const escCommaPattern = new RegExp(escComma, 'g');
-const escPeriodPattern = new RegExp(escPeriod, 'g');
-const slashPattern = /\\\\/g;
-const openPattern = /\\{/g;
-const closePattern = /\\}/g;
-const commaPattern = /\\,/g;
-const periodPattern = /\\\./g;
-exports.EXPANSION_MAX = 100_000;
-// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
-// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
-// truncated to 100k results - while making every result ~1500 characters
-// long. The result set, and the intermediate arrays built while combining
-// brace sets, then grow large enough to exhaust memory and crash the process
-// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
-// characters the accumulator may hold at any point, so memory stays flat no
-// matter how many brace groups are chained. The limit sits well above any
-// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
-// characters) so legitimate input is unaffected.
-exports.EXPANSION_MAX_LENGTH = 4_000_000;
-function numeric(str) {
-    return !isNaN(str) ? parseInt(str, 10) : str.charCodeAt(0);
-}
-function escapeBraces(str) {
-    return str
-        .replace(slashPattern, escSlash)
-        .replace(openPattern, escOpen)
-        .replace(closePattern, escClose)
-        .replace(commaPattern, escComma)
-        .replace(periodPattern, escPeriod);
-}
-function unescapeBraces(str) {
-    return str
-        .replace(escSlashPattern, '\\')
-        .replace(escOpenPattern, '{')
-        .replace(escClosePattern, '}')
-        .replace(escCommaPattern, ',')
-        .replace(escPeriodPattern, '.');
-}
-/**
- * Basically just str.split(","), but handling cases
- * where we have nested braced sections, which should be
- * treated as individual members, like {a,{b,c},d}
- */
-function parseCommaParts(str) {
-    if (!str) {
-        return [''];
-    }
-    const parts = [];
-    const m = (0, balanced_match_1.balanced)('{', '}', str);
-    if (!m) {
-        return str.split(',');
-    }
-    const { pre, body, post } = m;
-    const p = pre.split(',');
-    p[p.length - 1] += '{' + body + '}';
-    const postParts = parseCommaParts(post);
-    if (post.length) {
-        ;
-        p[p.length - 1] += postParts.shift();
-        p.push.apply(p, postParts);
-    }
-    parts.push.apply(parts, p);
-    return parts;
-}
-function expand(str, options = {}) {
-    if (!str) {
-        return [];
-    }
-    const { max = exports.EXPANSION_MAX, maxLength = exports.EXPANSION_MAX_LENGTH } = options;
-    // I don't know why Bash 4.3 does this, but it does.
-    // Anything starting with {} will have the first two bytes preserved
-    // but *only* at the top level, so {},a}b will not expand to anything,
-    // but a{},b}c will be expanded to [a}c,abc].
-    // One could argue that this is a bug in Bash, but since the goal of
-    // this module is to match Bash's rules, we escape a leading {}
-    if (str.slice(0, 2) === '{}') {
-        str = '\\{\\}' + str.slice(2);
-    }
-    return expand_(escapeBraces(str), max, maxLength, true).map(unescapeBraces);
-}
-function embrace(str) {
-    return '{' + str + '}';
-}
-function isPadded(el) {
-    return /^-?0\d/.test(el);
-}
-function lte(i, y) {
-    return i <= y;
-}
-function gte(i, y) {
-    return i >= y;
-}
-// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
-// number of results at `max` and the total number of characters at `maxLength`.
-// This is the one place output grows, so bounding it here keeps the single
-// accumulator - and therefore memory - flat regardless of how many brace groups
-// are combined (CVE-2026-14257).
-function combine(acc, pre, values, max, maxLength, dropEmpties) {
-    const out = [];
-    let length = 0;
-    for (let a = 0; a < acc.length; a++) {
-        for (let v = 0; v < values.length; v++) {
-            if (out.length >= max)
-                return out;
-            const expansion = acc[a] + pre + values[v];
-            // Bash drops empty results at the top level. Skip them before they count
-            // against `max`, so `max` bounds the number of *kept* results.
-            if (dropEmpties && !expansion)
-                continue;
-            if (length + expansion.length > maxLength)
-                return out;
-            out.push(expansion);
-            length += expansion.length;
-        }
-    }
-    return out;
-}
-// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
-// sequence body.
-function expandSequence(body, isAlphaSequence, max, maxLength) {
-    const n = body.split(/\.\./);
-    const N = [];
-    // A sequence body always splits into two or three parts, but the compiler
-    // can't know that.
-    /* c8 ignore start */
-    if (n[0] === undefined || n[1] === undefined) {
-        return N;
-    }
-    /* c8 ignore stop */
-    const x = numeric(n[0]);
-    const y = numeric(n[1]);
-    const width = Math.max(n[0].length, n[1].length);
-    let incr = n.length === 3 && n[2] !== undefined ?
-        Math.max(Math.abs(numeric(n[2])), 1)
-        : 1;
-    let test = lte;
-    const reverse = y < x;
-    if (reverse) {
-        incr *= -1;
-        test = gte;
-    }
-    const pad = n.some(isPadded);
-    let length = 0;
-    for (let i = x; test(i, y) && N.length < max; i += incr) {
-        let c;
-        if (isAlphaSequence) {
-            c = String.fromCharCode(i);
-            if (c === '\\') {
-                c = '';
-            }
-        }
-        else {
-            c = String(i);
-            if (pad) {
-                const need = width - c.length;
-                if (need > 0) {
-                    const z = new Array(need + 1).join('0');
-                    if (i < 0) {
-                        c = '-' + z + c.slice(1);
-                    }
-                    else {
-                        c = z + c;
-                    }
-                }
-            }
-        }
-        if (length + c.length > maxLength)
-            break;
-        N.push(c);
-        length += c.length;
-    }
-    return N;
-}
-function expand_(str, max, maxLength, isTop) {
-    // Consume the string's top-level brace groups left to right, threading a
-    // running set of combined prefixes (`acc`). Expanding the tail iteratively -
-    // rather than recursing on `m.post` once per group - keeps the native stack
-    // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
-    // longer overflow the stack, and leaves a single accumulator whose size
-    // `maxLength` bounds directly (CVE-2026-14257).
-    let acc = [''];
-    // Bash drops empty results, but only when the *first* top-level group is a
-    // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
-    // is on the final strings, so it is applied to whichever `combine` produces
-    // them (the one with no brace set left in the tail).
-    let dropEmpties = false;
-    let firstGroup = true;
-    for (;;) {
-        const m = (0, balanced_match_1.balanced)('{', '}', str);
-        // No brace set left: the rest of the string is literal.
-        if (!m) {
-            return combine(acc, str, [''], max, maxLength, dropEmpties);
-        }
-        // no need to expand pre, since it is guaranteed to be free of brace-sets
-        const pre = m.pre;
-        if (/\$$/.test(pre)) {
-            acc = combine(acc, pre + '{' + m.body + '}', [''], max, maxLength, dropEmpties && !m.post.length);
-            firstGroup = false;
-            if (!m.post.length)
-                break;
-            str = m.post;
-            continue;
-        }
-        const isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
-        const isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
-        const isSequence = isNumericSequence || isAlphaSequence;
-        const isOptions = m.body.indexOf(',') >= 0;
-        if (!isSequence && !isOptions) {
-            // {a},b}
-            if (m.post.match(/,(?!,).*\}/)) {
-                str = m.pre + '{' + m.body + escClose + m.post;
-                isTop = true;
-                continue;
-            }
-            // Nothing here expands, so the whole remaining string is literal.
-            return combine(acc, pre + '{' + m.body + '}' + m.post, [''], max, maxLength, dropEmpties);
-        }
-        if (firstGroup) {
-            dropEmpties = isTop && !isSequence;
-            firstGroup = false;
-        }
-        let values;
-        if (isSequence) {
-            values = expandSequence(m.body, isAlphaSequence, max, maxLength);
-        }
-        else {
-            let n = parseCommaParts(m.body);
-            if (n.length === 1 && n[0] !== undefined) {
-                // x{{a,b}}y ==> x{a}y x{b}y
-                n = expand_(n[0], max, maxLength, false).map(embrace);
-                //XXX is this necessary? Can't seem to hit it in tests.
-                /* c8 ignore start */
-                if (n.length === 1) {
-                    acc = combine(acc, pre + n[0], [''], max, maxLength, dropEmpties && !m.post.length);
-                    if (!m.post.length)
-                        break;
-                    str = m.post;
-                    continue;
-                }
-                /* c8 ignore stop */
-            }
-            // Values that `combine` is going to drop as empty produce no result, so
-            // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
-            // would stop at `['a', '']` and yield one result instead of two. Skipping
-            // them outright keeps `values` bounded while leaving `max` a bound on
-            // *kept* results.
-            let dropsEmpties = dropEmpties && !m.post.length && !pre;
-            for (let d = 0; dropsEmpties && d < acc.length; d++) {
-                if (acc[d]) {
-                    dropsEmpties = false;
-                }
-            }
-            values = [];
-            let valuesLength = 0;
-            outer: for (let j = 0; j < n.length; j++) {
-                const expanded = expand_(n[j], max, maxLength, false);
-                for (let k = 0; k < expanded.length; k++) {
-                    const v = expanded[k];
-                    if (dropsEmpties && !v)
-                        continue;
-                    if (values.length >= max || valuesLength + v.length > maxLength) {
-                        break outer;
-                    }
-                    values.push(v);
-                    valuesLength += v.length;
-                }
-            }
-        }
-        acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length);
-        if (!m.post.length)
-            break;
-        str = m.post;
-    }
-    return acc;
-}
-//# sourceMappingURL=index.js.map
-
-/***/ }),
-
-/***/ 4358:
+/***/ 7457:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 // This file exists as a CommonJS module to read the version from package.json.
@@ -51254,17 +55023,17 @@ function expand_(str, max, maxLength, isTop) {
 // ESLint rules and doesn't work reliably across all Node.js versions.
 // By keeping this as a .cjs file, we can use require() naturally and export
 // the version for the ESM modules to import.
-const packageJson = __nccwpck_require__(9919)
+const packageJson = __nccwpck_require__(6662)
 module.exports = { version: packageJson.version }
 
 
 /***/ }),
 
-/***/ 9919:
+/***/ 6662:
 /***/ ((module) => {
 
 "use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"name":"@actions/cache","version":"6.2.0","description":"Actions cache lib","keywords":["github","actions","cache"],"homepage":"https://github.com/actions/toolkit/tree/main/packages/cache","license":"MIT","type":"module","main":"lib/cache.js","types":"lib/cache.d.ts","exports":{".":{"types":"./lib/cache.d.ts","import":"./lib/cache.js"}},"directories":{"lib":"lib","test":"__tests__"},"files":["lib","!.DS_Store"],"publishConfig":{"access":"public"},"repository":{"type":"git","url":"git+https://github.com/actions/toolkit.git","directory":"packages/cache"},"scripts":{"audit-moderate":"npm install && npm audit --json --audit-level=moderate > audit.json","test":"echo \\"Error: run tests from root\\" && exit 1","tsc":"tsc && cp src/internal/shared/package-version.cjs lib/internal/shared/"},"bugs":{"url":"https://github.com/actions/toolkit/issues"},"dependencies":{"@actions/core":"^3.0.1","@actions/exec":"^3.0.0","@actions/glob":"^0.6.1","@actions/http-client":"^4.0.1","@actions/io":"^3.0.2","@azure/core-rest-pipeline":"^1.23.0","@azure/storage-blob":"^12.31.0","@protobuf-ts/runtime-rpc":"^2.11.1","semver":"^7.7.4"},"devDependencies":{"@protobuf-ts/plugin":"^2.11.1","@types/node":"^25.6.0","@types/semver":"^7.7.1","typescript":"^5.9.3"},"overrides":{"uri-js":"npm:uri-js-replace@^1.0.1","node-fetch":"^3.3.2"}}');
+module.exports = /*#__PURE__*/JSON.parse('{"name":"@actions/cache","version":"6.3.0","description":"Actions cache lib","keywords":["github","actions","cache"],"homepage":"https://github.com/actions/toolkit/tree/main/packages/cache","license":"MIT","type":"module","main":"lib/cache.js","types":"lib/cache.d.ts","exports":{".":{"types":"./lib/cache.d.ts","import":"./lib/cache.js"}},"directories":{"lib":"lib","test":"__tests__"},"files":["lib","!.DS_Store"],"publishConfig":{"access":"public"},"repository":{"type":"git","url":"git+https://github.com/actions/toolkit.git","directory":"packages/cache"},"scripts":{"audit-moderate":"npm install && npm audit --json --audit-level=moderate > audit.json","test":"echo \\"Error: run tests from root\\" && exit 1","tsc":"tsc && cp src/internal/shared/package-version.cjs lib/internal/shared/"},"bugs":{"url":"https://github.com/actions/toolkit/issues"},"dependencies":{"@actions/core":"^3.0.1","@actions/exec":"^3.0.0","@actions/glob":"^0.7.0","@actions/http-client":"^4.0.1","@actions/io":"^3.0.2","@azure/core-rest-pipeline":"~1.23.0","@azure/storage-blob":"~12.31.0","@protobuf-ts/runtime-rpc":"^2.11.1","semver":"^7.8.5"},"devDependencies":{"@protobuf-ts/plugin":"^2.11.1","@types/node":"^25.9.8","@types/semver":"^7.8.0","typescript":"^5.9.3"},"overrides":{"uri-js":"npm:uri-js-replace@^1.0.1","node-fetch":"^3.3.2"}}');
 
 /***/ })
 
@@ -51380,7 +55149,7 @@ var __webpack_exports__ = {};
 (() => {
 "use strict";
 
-// NAMESPACE OBJECT: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/mappers.js
+// NAMESPACE OBJECT: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/mappers.js
 var mappers_namespaceObject = {};
 __nccwpck_require__.r(mappers_namespaceObject);
 __nccwpck_require__.d(mappers_namespaceObject, {
@@ -51734,8 +55503,8 @@ function file_command_prepareKeyValueMessage(key, value) {
     return `${key}<<${delimiter}${external_os_.EOL}${convertedValue}${external_os_.EOL}${delimiter}`;
 }
 //# sourceMappingURL=file-command.js.map
-// EXTERNAL MODULE: external "path"
-var external_path_ = __nccwpck_require__(6928);
+;// CONCATENATED MODULE: external "path"
+const external_path_namespaceObject = require("path");
 // EXTERNAL MODULE: external "http"
 var external_http_ = __nccwpck_require__(8611);
 var external_http_namespaceObject = /*#__PURE__*/__nccwpck_require__.t(external_http_, 2);
@@ -51835,8 +55604,8 @@ class DecodedURL extends URL {
 //# sourceMappingURL=proxy.js.map
 // EXTERNAL MODULE: ./node_modules/.pnpm/tunnel@0.0.6/node_modules/tunnel/index.js
 var tunnel = __nccwpck_require__(7013);
-// EXTERNAL MODULE: ./node_modules/.pnpm/undici@8.10.0/node_modules/undici/index.js
-var undici = __nccwpck_require__(8628);
+// EXTERNAL MODULE: ./node_modules/.pnpm/undici@8.12.2/node_modules/undici/index.js
+var undici = __nccwpck_require__(9620);
 ;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+http-client@4.0.1/node_modules/@actions/http-client/lib/index.js
 /* eslint-disable @typescript-eslint/no-explicit-any */
 var __awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
@@ -53104,7 +56873,7 @@ function tryGetExecutablePath(filePath, extensions) {
         if (stats && stats.isFile()) {
             if (IS_WINDOWS) {
                 // on Windows, test for valid extension
-                const upperExt = external_path_.extname(filePath).toUpperCase();
+                const upperExt = external_path_namespaceObject.extname(filePath).toUpperCase();
                 if (extensions.some(validExt => validExt.toUpperCase() === upperExt)) {
                     return filePath;
                 }
@@ -53133,11 +56902,11 @@ function tryGetExecutablePath(filePath, extensions) {
                 if (IS_WINDOWS) {
                     // preserve the case of the actual file (since an extension was appended)
                     try {
-                        const directory = external_path_.dirname(filePath);
-                        const upperName = external_path_.basename(filePath).toUpperCase();
+                        const directory = external_path_namespaceObject.dirname(filePath);
+                        const upperName = external_path_namespaceObject.basename(filePath).toUpperCase();
                         for (const actualName of yield readdir(directory)) {
                             if (upperName === actualName.toUpperCase()) {
-                                filePath = external_path_.join(directory, actualName);
+                                filePath = external_path_namespaceObject.join(directory, actualName);
                                 break;
                             }
                         }
@@ -53277,7 +57046,7 @@ function mv(source_1, dest_1) {
  */
 function rmRF(inputPath) {
     return io_awaiter(this, void 0, void 0, function* () {
-        if (ioUtil.IS_WINDOWS) {
+        if (IS_WINDOWS) {
             // Check for invalid characters
             // https://docs.microsoft.com/en-us/windows/win32/fileio/naming-a-file
             if (/[*"<>|]/.test(inputPath)) {
@@ -53286,7 +57055,7 @@ function rmRF(inputPath) {
         }
         try {
             // note if path does not exist, error is silent
-            yield ioUtil.rm(inputPath, {
+            yield rm(inputPath, {
                 force: true,
                 maxRetries: 3,
                 recursive: true,
@@ -53357,7 +57126,7 @@ function findInPath(tool) {
         // build the list of extensions to try
         const extensions = [];
         if (IS_WINDOWS && process.env['PATHEXT']) {
-            for (const extension of process.env['PATHEXT'].split(external_path_.delimiter)) {
+            for (const extension of process.env['PATHEXT'].split(external_path_namespaceObject.delimiter)) {
                 if (extension) {
                     extensions.push(extension);
                 }
@@ -53372,7 +57141,7 @@ function findInPath(tool) {
             return [];
         }
         // if any path separators, return empty
-        if (tool.includes(external_path_.sep)) {
+        if (tool.includes(external_path_namespaceObject.sep)) {
             return [];
         }
         // build the list of directories
@@ -53383,7 +57152,7 @@ function findInPath(tool) {
         // across platforms.
         const directories = [];
         if (process.env.PATH) {
-            for (const p of process.env.PATH.split(external_path_.delimiter)) {
+            for (const p of process.env.PATH.split(external_path_namespaceObject.delimiter)) {
                 if (p) {
                     directories.push(p);
                 }
@@ -53392,7 +57161,7 @@ function findInPath(tool) {
         // find all matches
         const matches = [];
         for (const directory of directories) {
-            const filePath = yield tryGetExecutablePath(external_path_.join(directory, tool), extensions);
+            const filePath = yield tryGetExecutablePath(external_path_namespaceObject.join(directory, tool), extensions);
             if (filePath) {
                 matches.push(filePath);
             }
@@ -53823,7 +57592,7 @@ class ToolRunner extends external_events_.EventEmitter {
                 (this.toolPath.includes('/') ||
                     (toolrunner_IS_WINDOWS && this.toolPath.includes('\\')))) {
                 // prefer options.cwd if it is specified, however options.cwd may also need to be rooted
-                this.toolPath = external_path_.resolve(process.cwd(), this.options.cwd || process.cwd(), this.toolPath);
+                this.toolPath = external_path_namespaceObject.resolve(process.cwd(), this.options.cwd || process.cwd(), this.toolPath);
             }
             // if the tool is only a file name, then resolve it from the PATH
             // otherwise verify it exists (add extension on Windows if necessary)
@@ -54286,7 +58055,7 @@ function addPath(inputPath) {
     else {
         command_issueCommand('add-path', {}, inputPath);
     }
-    process.env['PATH'] = `${inputPath}${external_path_.delimiter}${process.env['PATH']}`;
+    process.env['PATH'] = `${inputPath}${external_path_namespaceObject.delimiter}${process.env['PATH']}`;
 }
 /**
  * Gets the value of an input.
@@ -54512,7 +58281,7 @@ function getIDToken(aud) {
  */
 
 //# sourceMappingURL=core.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-glob-options-helper.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-glob-options-helper.js
 
 /**
  * Returns a copy with defaults filled in.
@@ -54550,7 +58319,7 @@ function getOptions(copy) {
     return result;
 }
 //# sourceMappingURL=internal-glob-options-helper.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-path-helper.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-path-helper.js
 
 
 const internal_path_helper_IS_WINDOWS = process.platform === 'win32';
@@ -54579,7 +58348,7 @@ function dirname(p) {
         return p;
     }
     // Get dirname
-    let result = external_path_.dirname(p);
+    let result = external_path_namespaceObject.dirname(p);
     // Trim trailing slash for Windows UNC root, e.g. \\hello\world\
     if (internal_path_helper_IS_WINDOWS && /^\\\\[^\\]+\\[^\\]+\\$/.test(result)) {
         result = safeTrimTrailingSeparator(result);
@@ -54638,7 +58407,7 @@ function ensureAbsoluteRoot(root, itemPath) {
     }
     else {
         // Append separator
-        root += external_path_.sep;
+        root += external_path_namespaceObject.sep;
     }
     return root + itemPath;
 }
@@ -54703,11 +58472,11 @@ function safeTrimTrailingSeparator(p) {
     // Normalize separators
     p = internal_path_helper_normalizeSeparators(p);
     // No trailing slash
-    if (!p.endsWith(external_path_.sep)) {
+    if (!p.endsWith(external_path_namespaceObject.sep)) {
         return p;
     }
     // Check '/' on Linux/macOS and '\' on Windows
-    if (p === external_path_.sep) {
+    if (p === external_path_namespaceObject.sep) {
         return p;
     }
     // On Windows check if drive root. E.g. C:\
@@ -54718,7 +58487,7 @@ function safeTrimTrailingSeparator(p) {
     return p.substr(0, p.length - 1);
 }
 //# sourceMappingURL=internal-path-helper.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-match-kind.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-match-kind.js
 /**
  * Indicates whether a pattern matches a path
  */
@@ -54734,7 +58503,7 @@ var MatchKind;
     MatchKind[MatchKind["All"] = 3] = "All";
 })(MatchKind || (MatchKind = {}));
 //# sourceMappingURL=internal-match-kind.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-pattern-helper.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-pattern-helper.js
 
 
 const internal_pattern_helper_IS_WINDOWS = process.platform === 'win32';
@@ -54804,9 +58573,2569 @@ function internal_pattern_helper_partialMatch(patterns, itemPath) {
     return patterns.some(x => !x.negate && x.partialMatch(itemPath));
 }
 //# sourceMappingURL=internal-pattern-helper.js.map
-// EXTERNAL MODULE: ./node_modules/.pnpm/minimatch@3.1.5/node_modules/minimatch/minimatch.js
-var minimatch = __nccwpck_require__(6252);
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-path.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/balanced-match@4.0.4/node_modules/balanced-match/dist/esm/index.js
+const balanced = (a, b, str) => {
+    const ma = a instanceof RegExp ? maybeMatch(a, str) : a;
+    const mb = b instanceof RegExp ? maybeMatch(b, str) : b;
+    const r = ma !== null && mb != null && range(ma, mb, str);
+    return (r && {
+        start: r[0],
+        end: r[1],
+        pre: str.slice(0, r[0]),
+        body: str.slice(r[0] + ma.length, r[1]),
+        post: str.slice(r[1] + mb.length),
+    });
+};
+const maybeMatch = (reg, str) => {
+    const m = str.match(reg);
+    return m ? m[0] : null;
+};
+const range = (a, b, str) => {
+    let begs, beg, left, right = undefined, result;
+    let ai = str.indexOf(a);
+    let bi = str.indexOf(b, ai + 1);
+    let i = ai;
+    if (ai >= 0 && bi > 0) {
+        if (a === b) {
+            return [ai, bi];
+        }
+        begs = [];
+        left = str.length;
+        while (i >= 0 && !result) {
+            if (i === ai) {
+                begs.push(i);
+                ai = str.indexOf(a, i + 1);
+            }
+            else if (begs.length === 1) {
+                const r = begs.pop();
+                if (r !== undefined)
+                    result = [r, bi];
+            }
+            else {
+                beg = begs.pop();
+                if (beg !== undefined && beg < left) {
+                    left = beg;
+                    right = bi;
+                }
+                bi = str.indexOf(b, i + 1);
+            }
+            i = ai < bi && ai >= 0 ? ai : bi;
+        }
+        if (begs.length && right !== undefined) {
+            result = [left, right];
+        }
+    }
+    return result;
+};
+//# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/brace-expansion@5.0.12/node_modules/brace-expansion/dist/esm/index.js
+
+const escSlash = '\0SLASH' + Math.random() + '\0';
+const escOpen = '\0OPEN' + Math.random() + '\0';
+const escClose = '\0CLOSE' + Math.random() + '\0';
+const escComma = '\0COMMA' + Math.random() + '\0';
+const escPeriod = '\0PERIOD' + Math.random() + '\0';
+const escSlashPattern = new RegExp(escSlash, 'g');
+const escOpenPattern = new RegExp(escOpen, 'g');
+const escClosePattern = new RegExp(escClose, 'g');
+const escCommaPattern = new RegExp(escComma, 'g');
+const escPeriodPattern = new RegExp(escPeriod, 'g');
+const slashPattern = /\\\\/g;
+const openPattern = /\\{/g;
+const closePattern = /\\}/g;
+const commaPattern = /\\,/g;
+const periodPattern = /\\\./g;
+const EXPANSION_MAX = 100_000;
+// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
+// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
+// truncated to 100k results - while making every result ~1500 characters
+// long. The result set, and the intermediate arrays built while combining
+// brace sets, then grow large enough to exhaust memory and crash the process
+// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
+// characters the accumulator may hold at any point, so memory stays flat no
+// matter how many brace groups are chained. The limit sits well above any
+// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
+// characters) so legitimate input is unaffected.
+const EXPANSION_MAX_LENGTH = 4_000_000;
+// `expand_` recurses once per level of brace *nesting* - both when expanding a
+// set's comma members and when re-wrapping a set whose body is a single part.
+// The CVE-2026-14257 fix made the *tail* iterative (recursion on `m.post`, one
+// level per chained group), which left nesting depth unbounded: about 3,100
+// levels of `{{{...a,b...}}}` - only ~6KB of input - exhausted the native stack
+// and crashed the process. `EXPANSION_MAX_DEPTH` bounds how deep the parser
+// will follow nesting. It sits far above any realistic pattern and well below
+// the depth at which the stack runs out.
+const EXPANSION_MAX_DEPTH = 1_000;
+// Bash keeps a quirk where a brace group followed by a comma set still expands
+// (`{a},b}`). The parser implements it by rewriting the string and restarting
+// the scan, absorbing one `}` per pass. `n` trailing braces therefore cost `n`
+// full passes over a string that itself grows by one `escClose` sentinel each
+// time - quadratic in `n`, with a ~26x constant from the sentinel's length.
+// 128KB of `'{a}' + '}'.repeat(n) + ',z}'` blocked the event loop for 27
+// seconds to produce two results. `EXPANSION_MAX_REWRITES` bounds how many
+// times the scan may restart. Real `{a},b}` input needs a handful.
+const EXPANSION_MAX_REWRITES = 1_000;
+function numeric(str) {
+    return !isNaN(str) ? parseInt(str, 10) : str.charCodeAt(0);
+}
+function escapeBraces(str) {
+    return str
+        .replace(slashPattern, escSlash)
+        .replace(openPattern, escOpen)
+        .replace(closePattern, escClose)
+        .replace(commaPattern, escComma)
+        .replace(periodPattern, escPeriod);
+}
+function unescapeBraces(str) {
+    return str
+        .replace(escSlashPattern, '\\')
+        .replace(escOpenPattern, '{')
+        .replace(escClosePattern, '}')
+        .replace(escCommaPattern, ',')
+        .replace(escPeriodPattern, '.');
+}
+// Like `target.push(...items)` but doesn't overflow the stack
+function pushAll(target, items) {
+    for (let i = 0; i < items.length; i++) {
+        target.push(items[i]);
+    }
+}
+/**
+ * Basically just str.split(","), but handling cases
+ * where we have nested braced sections, which should be
+ * treated as individual members, like {a,{b,c},d}
+ */
+function parseCommaParts(str) {
+    const parts = [];
+    // Walk the brace groups iteratively. Recursing on `post` once per group let a
+    // chain of them exhaust the stack - the parsing-side counterpart to
+    // the `expand_` overflow fixed for CVE-2026-14257, and not something `max` or
+    // `maxLength` can bound, since it happens before expansion.
+    //
+    // The part the next chunk continues
+    let carry = '';
+    for (;;) {
+        const m = balanced('{', '}', str);
+        if (!m) {
+            const tail = str.split(',');
+            tail[0] = carry + tail[0];
+            pushAll(parts, tail);
+            return parts;
+        }
+        const { pre, body, post } = m;
+        const p = pre.split(',');
+        p[0] = carry + p[0];
+        p[p.length - 1] += '{' + body + '}';
+        if (!post.length) {
+            pushAll(parts, p);
+            return parts;
+        }
+        carry = p.pop();
+        pushAll(parts, p);
+        str = post;
+    }
+}
+function expand(str, options = {}) {
+    if (!str) {
+        return [];
+    }
+    const { max = EXPANSION_MAX, maxLength = EXPANSION_MAX_LENGTH, maxDepth = EXPANSION_MAX_DEPTH, maxRewrites = EXPANSION_MAX_REWRITES, } = options;
+    // I don't know why Bash 4.3 does this, but it does.
+    // Anything starting with {} will have the first two bytes preserved
+    // but *only* at the top level, so {},a}b will not expand to anything,
+    // but a{},b}c will be expanded to [a}c,abc].
+    // One could argue that this is a bug in Bash, but since the goal of
+    // this module is to match Bash's rules, we escape a leading {}
+    if (str.slice(0, 2) === '{}') {
+        str = '\\{\\}' + str.slice(2);
+    }
+    return expand_(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
+}
+function embrace(str) {
+    return '{' + str + '}';
+}
+function isPadded(el) {
+    return /^-?0\d/.test(el);
+}
+function lte(i, y) {
+    return i <= y;
+}
+function gte(i, y) {
+    return i >= y;
+}
+// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
+// number of results at `max` and the total number of characters at `maxLength`.
+// This is the one place output grows, so bounding it here keeps the single
+// accumulator - and therefore memory - flat regardless of how many brace groups
+// are combined (CVE-2026-14257).
+function combine(acc, pre, values, max, maxLength, dropEmpties) {
+    const out = [];
+    let length = 0;
+    for (let a = 0; a < acc.length; a++) {
+        for (let v = 0; v < values.length; v++) {
+            if (out.length >= max)
+                return out;
+            const expansion = acc[a] + pre + values[v];
+            // Bash drops empty results at the top level. Skip them before they count
+            // against `max`, so `max` bounds the number of *kept* results.
+            if (dropEmpties && !expansion)
+                continue;
+            if (length + expansion.length > maxLength)
+                return out;
+            out.push(expansion);
+            length += expansion.length;
+        }
+    }
+    return out;
+}
+// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
+// sequence body.
+function expandSequence(body, isAlphaSequence, max, maxLength) {
+    const n = body.split(/\.\./);
+    const N = [];
+    // A sequence body always splits into two or three parts, but the compiler
+    // can't know that.
+    /* c8 ignore start */
+    if (n[0] === undefined || n[1] === undefined) {
+        return N;
+    }
+    /* c8 ignore stop */
+    const x = numeric(n[0]);
+    const y = numeric(n[1]);
+    const width = Math.max(n[0].length, n[1].length);
+    let incr = n.length === 3 && n[2] !== undefined ?
+        Math.max(Math.abs(numeric(n[2])), 1)
+        : 1;
+    let test = lte;
+    const reverse = y < x;
+    if (reverse) {
+        incr *= -1;
+        test = gte;
+    }
+    const pad = n.some(isPadded);
+    let length = 0;
+    for (let i = x; test(i, y) && N.length < max; i += incr) {
+        let c;
+        if (isAlphaSequence) {
+            c = String.fromCharCode(i);
+            if (c === '\\') {
+                c = '';
+            }
+        }
+        else {
+            c = String(i);
+            if (pad) {
+                const need = width - c.length;
+                if (need > 0) {
+                    const z = new Array(need + 1).join('0');
+                    if (i < 0) {
+                        c = '-' + z + c.slice(1);
+                    }
+                    else {
+                        c = z + c;
+                    }
+                }
+            }
+        }
+        if (length + c.length > maxLength)
+            break;
+        N.push(c);
+        length += c.length;
+    }
+    return N;
+}
+function expand_(str, max, maxLength, maxDepth, depth, maxRewrites, isTop) {
+    // Too deeply nested to keep following: treat the rest as literal, the same
+    // way a group that cannot expand is already handled. Truncating rather than
+    // throwing keeps `expand` total, matching `max` and `maxLength`.
+    if (depth > maxDepth) {
+        return [str];
+    }
+    // Consume the string's top-level brace groups left to right, threading a
+    // running set of combined prefixes (`acc`). Expanding the tail iteratively -
+    // rather than recursing on `m.post` once per group - keeps the native stack
+    // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
+    // longer overflow the stack, and leaves a single accumulator whose size
+    // `maxLength` bounds directly (CVE-2026-14257).
+    let acc = [''];
+    // Bash drops empty results, but only when the *first* top-level group is a
+    // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
+    // is on the final strings, so it is applied to whichever `combine` produces
+    // them (the one with no brace set left in the tail).
+    // How many times the `{a},b}` rewrite below has restarted the scan. Each pass
+    // re-reads the whole string, so leaving this unbounded is quadratic.
+    let rewrites = 0;
+    let dropEmpties = false;
+    let firstGroup = true;
+    for (;;) {
+        const m = balanced('{', '}', str);
+        // No brace set left: the rest of the string is literal.
+        if (!m) {
+            return combine(acc, str, [''], max, maxLength, dropEmpties);
+        }
+        // no need to expand pre, since it is guaranteed to be free of brace-sets
+        const pre = m.pre;
+        if (/\$$/.test(pre)) {
+            acc = combine(acc, pre + '{' + m.body + '}', [''], max, maxLength, dropEmpties && !m.post.length);
+            firstGroup = false;
+            if (!m.post.length)
+                break;
+            str = m.post;
+            continue;
+        }
+        const isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
+        const isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
+        const isSequence = isNumericSequence || isAlphaSequence;
+        const isOptions = m.body.indexOf(',') >= 0;
+        if (!isSequence && !isOptions) {
+            // {a},b}
+            if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+                rewrites++;
+                str = m.pre + '{' + m.body + escClose + m.post;
+                isTop = true;
+                continue;
+            }
+            // Nothing here expands, so the whole remaining string is literal.
+            return combine(acc, pre + '{' + m.body + '}' + m.post, [''], max, maxLength, dropEmpties);
+        }
+        if (firstGroup) {
+            dropEmpties = isTop && !isSequence;
+            firstGroup = false;
+        }
+        let values;
+        if (isSequence) {
+            values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+        }
+        else {
+            let n = parseCommaParts(m.body);
+            if (n.length === 1 && n[0] !== undefined) {
+                // x{{a,b}}y ==> x{a}y x{b}y
+                n = expand_(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
+                //XXX is this necessary? Can't seem to hit it in tests.
+                /* c8 ignore start */
+                if (n.length === 1) {
+                    acc = combine(acc, pre + n[0], [''], max, maxLength, dropEmpties && !m.post.length);
+                    if (!m.post.length)
+                        break;
+                    str = m.post;
+                    continue;
+                }
+                /* c8 ignore stop */
+            }
+            // Values that `combine` is going to drop as empty produce no result, so
+            // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
+            // would stop at `['a', '']` and yield one result instead of two. Skipping
+            // them outright keeps `values` bounded while leaving `max` a bound on
+            // *kept* results.
+            let dropsEmpties = dropEmpties && !m.post.length && !pre;
+            for (let d = 0; dropsEmpties && d < acc.length; d++) {
+                if (acc[d]) {
+                    dropsEmpties = false;
+                }
+            }
+            values = [];
+            let valuesLength = 0;
+            outer: for (let j = 0; j < n.length; j++) {
+                const expanded = expand_(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false);
+                for (let k = 0; k < expanded.length; k++) {
+                    const v = expanded[k];
+                    if (dropsEmpties && !v)
+                        continue;
+                    if (values.length >= max ||
+                        valuesLength + v.length > maxLength) {
+                        break outer;
+                    }
+                    values.push(v);
+                    valuesLength += v.length;
+                }
+            }
+        }
+        acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length);
+        if (!m.post.length)
+            break;
+        str = m.post;
+    }
+    return acc;
+}
+//# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/minimatch@10.2.6/node_modules/minimatch/dist/esm/assert-valid-pattern.js
+const MAX_PATTERN_LENGTH = 1024 * 64;
+const assertValidPattern = (pattern) => {
+    if (typeof pattern !== 'string') {
+        throw new TypeError('invalid pattern');
+    }
+    if (pattern.length > MAX_PATTERN_LENGTH) {
+        throw new TypeError('pattern is too long');
+    }
+};
+//# sourceMappingURL=assert-valid-pattern.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/minimatch@10.2.6/node_modules/minimatch/dist/esm/brace-expressions.js
+// translate the various posix character classes into unicode properties
+// this works across all unicode locales
+// { <posix class>: [<translation>, /u flag required, negated]
+const posixClasses = {
+    '[:alnum:]': ['\\p{L}\\p{Nl}\\p{Nd}', true],
+    '[:alpha:]': ['\\p{L}\\p{Nl}', true],
+    '[:ascii:]': ['\\x' + '00-\\x' + '7f', false],
+    '[:blank:]': ['\\p{Zs}\\t', true],
+    '[:cntrl:]': ['\\p{Cc}', true],
+    '[:digit:]': ['\\p{Nd}', true],
+    '[:graph:]': ['\\p{Z}\\p{C}', true, true],
+    '[:lower:]': ['\\p{Ll}', true],
+    '[:print:]': ['\\p{C}', true],
+    '[:punct:]': ['\\p{P}', true],
+    '[:space:]': ['\\p{Z}\\t\\r\\n\\v\\f', true],
+    '[:upper:]': ['\\p{Lu}', true],
+    '[:word:]': ['\\p{L}\\p{Nl}\\p{Nd}\\p{Pc}', true],
+    '[:xdigit:]': ['A-Fa-f0-9', false],
+};
+// only need to escape a few things inside of brace expressions
+// escapes: [ \ ] -
+const braceEscape = (s) => s.replace(/[[\]\\-]/g, '\\$&');
+// escape all regexp magic characters
+const regexpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+// everything has already been escaped, we just have to join
+const rangesToString = (ranges) => ranges.join('');
+// takes a glob string at a posix brace expression, and returns
+// an equivalent regular expression source, and boolean indicating
+// whether the /u flag needs to be applied, and the number of chars
+// consumed to parse the character class.
+// This also removes out of order ranges, and returns ($.) if the
+// entire class just no good.
+const parseClass = (glob, position) => {
+    const pos = position;
+    /* c8 ignore start */
+    if (glob.charAt(pos) !== '[') {
+        throw new Error('not in a brace expression');
+    }
+    /* c8 ignore stop */
+    const ranges = [];
+    const negs = [];
+    let i = pos + 1;
+    let sawStart = false;
+    let uflag = false;
+    let escaping = false;
+    let negate = false;
+    let endPos = pos;
+    let rangeStart = '';
+    WHILE: while (i < glob.length) {
+        const c = glob.charAt(i);
+        if ((c === '!' || c === '^') && i === pos + 1) {
+            negate = true;
+            i++;
+            continue;
+        }
+        if (c === ']' && sawStart && !escaping) {
+            endPos = i + 1;
+            break;
+        }
+        sawStart = true;
+        if (c === '\\') {
+            if (!escaping) {
+                escaping = true;
+                i++;
+                continue;
+            }
+            // escaped \ char, fall through and treat like normal char
+        }
+        if (c === '[' && !escaping) {
+            // either a posix class, a collation equivalent, or just a [
+            for (const [cls, [unip, u, neg]] of Object.entries(posixClasses)) {
+                if (glob.startsWith(cls, i)) {
+                    // invalid, [a-[] is fine, but not [a-[:alpha]]
+                    if (rangeStart) {
+                        return ['$.', false, glob.length - pos, true];
+                    }
+                    i += cls.length;
+                    if (neg)
+                        negs.push(unip);
+                    else
+                        ranges.push(unip);
+                    uflag = uflag || u;
+                    continue WHILE;
+                }
+            }
+        }
+        // now it's just a normal character, effectively
+        escaping = false;
+        if (rangeStart) {
+            // throw this range away if it's not valid, but others
+            // can still match.
+            if (c > rangeStart) {
+                ranges.push(braceEscape(rangeStart) + '-' + braceEscape(c));
+            }
+            else if (c === rangeStart) {
+                ranges.push(braceEscape(c));
+            }
+            rangeStart = '';
+            i++;
+            continue;
+        }
+        // now might be the start of a range.
+        // can be either c-d or c-] or c<more...>] or c] at this point
+        if (glob.startsWith('-]', i + 1)) {
+            ranges.push(braceEscape(c + '-'));
+            i += 2;
+            continue;
+        }
+        if (glob.startsWith('-', i + 1)) {
+            rangeStart = c;
+            i += 2;
+            continue;
+        }
+        // not the start of a range, just a single character
+        ranges.push(braceEscape(c));
+        i++;
+    }
+    if (endPos < i) {
+        // didn't see the end of the class, not a valid class,
+        // but might still be valid as a literal match.
+        return ['', false, 0, false];
+    }
+    // if we got no ranges and no negates, then we have a range that
+    // cannot possibly match anything, and that poisons the whole glob
+    if (!ranges.length && !negs.length) {
+        return ['$.', false, glob.length - pos, true];
+    }
+    // if we got one positive range, and it's a single character, then that's
+    // not actually a magic pattern, it's just that one literal character.
+    // we should not treat that as "magic", we should just return the literal
+    // character. [_] is a perfectly valid way to escape glob magic chars.
+    if (negs.length === 0 &&
+        ranges.length === 1 &&
+        /^\\?.$/.test(ranges[0]) &&
+        !negate) {
+        const r = ranges[0].length === 2 ? ranges[0].slice(-1) : ranges[0];
+        return [regexpEscape(r), false, endPos - pos, false];
+    }
+    const sranges = '[' + (negate ? '^' : '') + rangesToString(ranges) + ']';
+    const snegs = '[' + (negate ? '' : '^') + rangesToString(negs) + ']';
+    const comb = ranges.length && negs.length ? '(' + sranges + '|' + snegs + ')'
+        : ranges.length ? sranges
+            : snegs;
+    return [comb, uflag, endPos - pos, true];
+};
+//# sourceMappingURL=brace-expressions.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/minimatch@10.2.6/node_modules/minimatch/dist/esm/unescape.js
+/**
+ * Un-escape a string that has been escaped with {@link escape}.
+ *
+ * If the {@link MinimatchOptions.windowsPathsNoEscape} option is used, then
+ * square-bracket escapes are removed, but not backslash escapes.
+ *
+ * For example, it will turn the string `'[*]'` into `*`, but it will not
+ * turn `'\\*'` into `'*'`, because `\` is a path separator in
+ * `windowsPathsNoEscape` mode.
+ *
+ * When `windowsPathsNoEscape` is not set, then both square-bracket escapes and
+ * backslash escapes are removed.
+ *
+ * Slashes (and backslashes in `windowsPathsNoEscape` mode) cannot be escaped
+ * or unescaped.
+ *
+ * When `magicalBraces` is not set, escapes of braces (`{` and `}`) will not be
+ * unescaped.
+ */
+const unescape_unescape = (s, { windowsPathsNoEscape = false, magicalBraces = true, } = {}) => {
+    if (magicalBraces) {
+        return windowsPathsNoEscape ?
+            s.replace(/\[([^/\\])\]/g, '$1')
+            : s
+                .replace(/((?!\\).|^)\[([^/\\])\]/g, '$1$2')
+                .replace(/\\([^/])/g, '$1');
+    }
+    return windowsPathsNoEscape ?
+        s.replace(/\[([^/\\{}])\]/g, '$1')
+        : s
+            .replace(/((?!\\).|^)\[([^/\\{}])\]/g, '$1$2')
+            .replace(/\\([^/{}])/g, '$1');
+};
+//# sourceMappingURL=unescape.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/minimatch@10.2.6/node_modules/minimatch/dist/esm/ast.js
+// parse a single path portion
+var _a;
+
+
+const types = new Set(['!', '?', '+', '*', '@']);
+const isExtglobType = (c) => types.has(c);
+const isExtglobAST = (c) => isExtglobType(c.type);
+// Map of which extglob types can adopt the children of a nested extglob
+//
+// anything but ! can adopt a matching type:
+// +(a|+(b|c)|d) => +(a|b|c|d)
+// *(a|*(b|c)|d) => *(a|b|c|d)
+// @(a|@(b|c)|d) => @(a|b|c|d)
+// ?(a|?(b|c)|d) => ?(a|b|c|d)
+//
+// * can adopt anything, because 0 or repetition is allowed
+// *(a|?(b|c)|d) => *(a|b|c|d)
+// *(a|+(b|c)|d) => *(a|b|c|d)
+// *(a|@(b|c)|d) => *(a|b|c|d)
+//
+// + can adopt @, because 1 or repetition is allowed
+// +(a|@(b|c)|d) => +(a|b|c|d)
+//
+// + and @ CANNOT adopt *, because 0 would be allowed
+// +(a|*(b|c)|d) => would match "", on *(b|c)
+// @(a|*(b|c)|d) => would match "", on *(b|c)
+//
+// + and @ CANNOT adopt ?, because 0 would be allowed
+// +(a|?(b|c)|d) => would match "", on ?(b|c)
+// @(a|?(b|c)|d) => would match "", on ?(b|c)
+//
+// ? can adopt @, because 0 or 1 is allowed
+// ?(a|@(b|c)|d) => ?(a|b|c|d)
+//
+// ? and @ CANNOT adopt * or +, because >1 would be allowed
+// ?(a|*(b|c)|d) => would match bbb on *(b|c)
+// @(a|*(b|c)|d) => would match bbb on *(b|c)
+// ?(a|+(b|c)|d) => would match bbb on +(b|c)
+// @(a|+(b|c)|d) => would match bbb on +(b|c)
+//
+// ! CANNOT adopt ! (nothing else can either)
+// !(a|!(b|c)|d) => !(a|b|c|d) would fail to match on b (not not b|c)
+//
+// ! can adopt @
+// !(a|@(b|c)|d) => !(a|b|c|d)
+//
+// ! CANNOT adopt *
+// !(a|*(b|c)|d) => !(a|b|c|d) would match on bbb, not allowed
+//
+// ! CANNOT adopt +
+// !(a|+(b|c)|d) => !(a|b|c|d) would match on bbb, not allowed
+//
+// ! CANNOT adopt ?
+// x!(a|?(b|c)|d) => x!(a|b|c|d) would fail to match "x"
+const adoptionMap = new Map([
+    ['!', ['@']],
+    ['?', ['?', '@']],
+    ['@', ['@']],
+    ['*', ['*', '+', '?', '@']],
+    ['+', ['+', '@']],
+]);
+// nested extglobs that can be adopted in, but with the addition of
+// a blank '' element.
+const adoptionWithSpaceMap = new Map([
+    ['!', ['?']],
+    ['@', ['?']],
+    ['+', ['?', '*']],
+]);
+// union of the previous two maps
+const adoptionAnyMap = new Map([
+    ['!', ['?', '@']],
+    ['?', ['?', '@']],
+    ['@', ['?', '@']],
+    ['*', ['*', '+', '?', '@']],
+    ['+', ['+', '@', '?', '*']],
+]);
+// Extglobs that can take over their parent if they are the only child
+// the key is parent, value maps child to resulting extglob parent type
+// '@' is omitted because it's a special case. An `@` extglob with a single
+// member can always be usurped by that subpattern.
+const usurpMap = new Map([
+    ['!', new Map([['!', '@']])],
+    [
+        '?',
+        new Map([
+            ['*', '*'],
+            ['+', '*'],
+        ]),
+    ],
+    [
+        '@',
+        new Map([
+            ['!', '!'],
+            ['?', '?'],
+            ['@', '@'],
+            ['*', '*'],
+            ['+', '+'],
+        ]),
+    ],
+    [
+        '+',
+        new Map([
+            ['?', '*'],
+            ['*', '*'],
+        ]),
+    ],
+]);
+// Patterns that get prepended to bind to the start of either the
+// entire string, or just a single path portion, to prevent dots
+// and/or traversal patterns, when needed.
+// Exts don't need the ^ or / bit, because the root binds that already.
+const startNoTraversal = '(?!(?:^|/)\\.\\.?(?:$|/))';
+const startNoDot = '(?!\\.)';
+// characters that indicate a start of pattern needs the "no dots" bit,
+// because a dot *might* be matched. ( is not in the list, because in
+// the case of a child extglob, it will handle the prevention itself.
+const addPatternStart = new Set(['[', '.']);
+// cases where traversal is A-OK, no dot prevention needed
+const justDots = new Set(['..', '.']);
+const reSpecials = new Set('().*{}+?[]^$\\!');
+const regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+// any single thing other than /
+const qmark = '[^/]';
+// * => any number of characters
+const star = qmark + '*?';
+// use + when we need to ensure that *something* matches, because the * is
+// the only thing in the path portion.
+const starNoEmpty = qmark + '+?';
+// remove the \ chars that we added if we end up doing a nonmagic compare
+// const deslash = (s: string) => s.replace(/\\(.)/g, '$1')
+let ID = 0;
+class AST {
+    type;
+    #root;
+    #hasMagic;
+    #uflag = false;
+    #parts = [];
+    #parent;
+    #parentIndex;
+    #negs;
+    #filledNegs = false;
+    #options;
+    #toString;
+    // set to true if it's an extglob with no children
+    // (which really means one child of '')
+    #emptyExt = false;
+    id = ++ID;
+    get depth() {
+        return (this.#parent?.depth ?? -1) + 1;
+    }
+    [Symbol.for('nodejs.util.inspect.custom')]() {
+        return {
+            '@@type': 'AST',
+            id: this.id,
+            type: this.type,
+            root: this.#root.id,
+            parent: this.#parent?.id,
+            depth: this.depth,
+            partsLength: this.#parts.length,
+            parts: this.#parts,
+        };
+    }
+    constructor(type, parent, options = {}) {
+        this.type = type;
+        // extglobs are inherently magical
+        if (type)
+            this.#hasMagic = true;
+        this.#parent = parent;
+        this.#root = this.#parent ? this.#parent.#root : this;
+        this.#options = this.#root === this ? options : this.#root.#options;
+        this.#negs = this.#root === this ? [] : this.#root.#negs;
+        if (type === '!' && !this.#root.#filledNegs)
+            this.#negs.push(this);
+        this.#parentIndex = this.#parent ? this.#parent.#parts.length : 0;
+    }
+    get hasMagic() {
+        /* c8 ignore start */
+        if (this.#hasMagic !== undefined)
+            return this.#hasMagic;
+        /* c8 ignore stop */
+        for (const p of this.#parts) {
+            if (typeof p === 'string')
+                continue;
+            if (p.type || p.hasMagic)
+                return (this.#hasMagic = true);
+        }
+        // note: will be undefined until we generate the regexp src and find out
+        return this.#hasMagic;
+    }
+    // reconstructs the pattern
+    toString() {
+        return (this.#toString !== undefined ? this.#toString
+            : !this.type ?
+                (this.#toString = this.#parts.map(p => String(p)).join(''))
+                : (this.#toString =
+                    this.type +
+                        '(' +
+                        this.#parts.map(p => String(p)).join('|') +
+                        ')'));
+    }
+    #fillNegs() {
+        /* c8 ignore start */
+        if (this !== this.#root)
+            throw new Error('should only call on root');
+        if (this.#filledNegs)
+            return this;
+        /* c8 ignore stop */
+        // call toString() once to fill this out
+        this.toString();
+        this.#filledNegs = true;
+        let n;
+        while ((n = this.#negs.pop())) {
+            if (n.type !== '!')
+                continue;
+            // walk up the tree, appending everthing that comes AFTER parentIndex
+            let p = n;
+            let pp = p.#parent;
+            while (pp) {
+                for (let i = p.#parentIndex + 1; !pp.type && i < pp.#parts.length; i++) {
+                    for (const part of n.#parts) {
+                        /* c8 ignore start */
+                        if (typeof part === 'string') {
+                            throw new Error('string part in extglob AST??');
+                        }
+                        /* c8 ignore stop */
+                        part.copyIn(pp.#parts[i]);
+                    }
+                }
+                p = pp;
+                pp = p.#parent;
+            }
+        }
+        return this;
+    }
+    push(...parts) {
+        for (const p of parts) {
+            if (p === '')
+                continue;
+            /* c8 ignore start */
+            if (typeof p !== 'string' &&
+                !(p instanceof _a && p.#parent === this)) {
+                throw new Error('invalid part: ' + p);
+            }
+            /* c8 ignore stop */
+            this.#parts.push(p);
+        }
+    }
+    toJSON() {
+        const ret = this.type === null ?
+            this.#parts
+                .slice()
+                .map(p => (typeof p === 'string' ? p : p.toJSON()))
+            : [this.type, ...this.#parts.map(p => p.toJSON())];
+        if (this.isStart() && !this.type)
+            ret.unshift([]);
+        if (this.isEnd() &&
+            (this === this.#root ||
+                (this.#root.#filledNegs && this.#parent?.type === '!'))) {
+            ret.push({});
+        }
+        return ret;
+    }
+    isStart() {
+        if (this.#root === this)
+            return true;
+        // if (this.type) return !!this.#parent?.isStart()
+        if (!this.#parent?.isStart())
+            return false;
+        if (this.#parentIndex === 0)
+            return true;
+        // if everything AHEAD of this is a negation, then it's still the "start"
+        const p = this.#parent;
+        for (let i = 0; i < this.#parentIndex; i++) {
+            const pp = p.#parts[i];
+            if (!(pp instanceof _a && pp.type === '!')) {
+                return false;
+            }
+        }
+        return true;
+    }
+    isEnd() {
+        if (this.#root === this)
+            return true;
+        if (this.#parent?.type === '!')
+            return true;
+        if (!this.#parent?.isEnd())
+            return false;
+        if (!this.type)
+            return this.#parent?.isEnd();
+        // if not root, it'll always have a parent
+        /* c8 ignore start */
+        const pl = this.#parent ? this.#parent.#parts.length : 0;
+        /* c8 ignore stop */
+        return this.#parentIndex === pl - 1;
+    }
+    copyIn(part) {
+        if (typeof part === 'string')
+            this.push(part);
+        else
+            this.push(part.clone(this));
+    }
+    clone(parent) {
+        const c = new _a(this.type, parent);
+        for (const p of this.#parts) {
+            c.copyIn(p);
+        }
+        return c;
+    }
+    static #parseAST(str, ast, pos, opt, extDepth) {
+        const maxDepth = opt.maxExtglobRecursion ?? 2;
+        let escaping = false;
+        let inBrace = false;
+        let braceStart = -1;
+        let braceNeg = false;
+        if (ast.type === null) {
+            // outside of a extglob, append until we find a start
+            let i = pos;
+            let acc = '';
+            while (i < str.length) {
+                const c = str.charAt(i++);
+                // still accumulate escapes at this point, but we do ignore
+                // starts that are escaped
+                if (escaping || c === '\\') {
+                    escaping = !escaping;
+                    acc += c;
+                    continue;
+                }
+                if (inBrace) {
+                    if (i === braceStart + 1) {
+                        if (c === '^' || c === '!') {
+                            braceNeg = true;
+                        }
+                    }
+                    else if (c === ']' && !(i === braceStart + 2 && braceNeg)) {
+                        inBrace = false;
+                    }
+                    acc += c;
+                    continue;
+                }
+                else if (c === '[') {
+                    inBrace = true;
+                    braceStart = i;
+                    braceNeg = false;
+                    acc += c;
+                    continue;
+                }
+                // we don't have to check for adoption here, because that's
+                // done at the other recursion point.
+                const doRecurse = !opt.noext &&
+                    isExtglobType(c) &&
+                    str.charAt(i) === '(' &&
+                    extDepth <= maxDepth;
+                if (doRecurse) {
+                    ast.push(acc);
+                    acc = '';
+                    const ext = new _a(c, ast);
+                    i = _a.#parseAST(str, ext, i, opt, extDepth + 1);
+                    ast.push(ext);
+                    continue;
+                }
+                acc += c;
+            }
+            ast.push(acc);
+            return i;
+        }
+        // some kind of extglob, pos is at the (
+        // find the next | or )
+        let i = pos + 1;
+        let part = new _a(null, ast);
+        const parts = [];
+        let acc = '';
+        while (i < str.length) {
+            const c = str.charAt(i++);
+            // still accumulate escapes at this point, but we do ignore
+            // starts that are escaped
+            if (escaping || c === '\\') {
+                escaping = !escaping;
+                acc += c;
+                continue;
+            }
+            if (inBrace) {
+                if (i === braceStart + 1) {
+                    if (c === '^' || c === '!') {
+                        braceNeg = true;
+                    }
+                }
+                else if (c === ']' && !(i === braceStart + 2 && braceNeg)) {
+                    inBrace = false;
+                }
+                acc += c;
+                continue;
+            }
+            else if (c === '[') {
+                inBrace = true;
+                braceStart = i;
+                braceNeg = false;
+                acc += c;
+                continue;
+            }
+            const doRecurse = !opt.noext &&
+                isExtglobType(c) &&
+                str.charAt(i) === '(' &&
+                /* c8 ignore start - the maxDepth is sufficient here */
+                (extDepth <= maxDepth || (ast && ast.#canAdoptType(c)));
+            /* c8 ignore stop */
+            if (doRecurse) {
+                const depthAdd = ast && ast.#canAdoptType(c) ? 0 : 1;
+                part.push(acc);
+                acc = '';
+                const ext = new _a(c, part);
+                part.push(ext);
+                i = _a.#parseAST(str, ext, i, opt, extDepth + depthAdd);
+                continue;
+            }
+            if (c === '|') {
+                part.push(acc);
+                acc = '';
+                parts.push(part);
+                part = new _a(null, ast);
+                continue;
+            }
+            if (c === ')') {
+                if (acc === '' && ast.#parts.length === 0) {
+                    ast.#emptyExt = true;
+                }
+                part.push(acc);
+                acc = '';
+                ast.push(...parts, part);
+                return i;
+            }
+            acc += c;
+        }
+        // unfinished extglob
+        // if we got here, it was a malformed extglob! not an extglob, but
+        // maybe something else in there.
+        ast.type = null;
+        ast.#hasMagic = undefined;
+        ast.#parts = [str.substring(pos - 1)];
+        return i;
+    }
+    #canAdoptWithSpace(child) {
+        return this.#canAdopt(child, adoptionWithSpaceMap);
+    }
+    #canAdopt(child, map = adoptionMap) {
+        if (!child ||
+            typeof child !== 'object' ||
+            child.type !== null ||
+            child.#parts.length !== 1 ||
+            this.type === null) {
+            return false;
+        }
+        const gc = child.#parts[0];
+        if (!gc || typeof gc !== 'object' || gc.type === null) {
+            return false;
+        }
+        return this.#canAdoptType(gc.type, map);
+    }
+    #canAdoptType(c, map = adoptionAnyMap) {
+        return !!map.get(this.type)?.includes(c);
+    }
+    #adoptWithSpace(child, index) {
+        const gc = child.#parts[0];
+        const blank = new _a(null, gc, this.options);
+        blank.#parts.push('');
+        gc.push(blank);
+        this.#adopt(child, index);
+    }
+    #adopt(child, index) {
+        const gc = child.#parts[0];
+        this.#parts.splice(index, 1, ...gc.#parts);
+        for (const p of gc.#parts) {
+            if (typeof p === 'object')
+                p.#parent = this;
+        }
+        this.#toString = undefined;
+    }
+    #canUsurpType(c) {
+        const m = usurpMap.get(this.type);
+        return !!m?.has(c);
+    }
+    #canUsurp(child) {
+        if (!child ||
+            typeof child !== 'object' ||
+            child.type !== null ||
+            child.#parts.length !== 1 ||
+            this.type === null ||
+            this.#parts.length !== 1) {
+            return false;
+        }
+        const gc = child.#parts[0];
+        if (!gc || typeof gc !== 'object' || gc.type === null) {
+            return false;
+        }
+        return this.#canUsurpType(gc.type);
+    }
+    #usurp(child) {
+        const m = usurpMap.get(this.type);
+        const gc = child.#parts[0];
+        const nt = m?.get(gc.type);
+        /* c8 ignore start - impossible */
+        if (!nt)
+            return false;
+        /* c8 ignore stop */
+        this.#parts = gc.#parts;
+        for (const p of this.#parts) {
+            if (typeof p === 'object') {
+                p.#parent = this;
+            }
+        }
+        this.type = nt;
+        this.#toString = undefined;
+        this.#emptyExt = false;
+    }
+    static fromGlob(pattern, options = {}) {
+        const ast = new _a(null, undefined, options);
+        _a.#parseAST(pattern, ast, 0, options, 0);
+        return ast;
+    }
+    // returns the regular expression if there's magic, or the unescaped
+    // string if not.
+    toMMPattern() {
+        // should only be called on root
+        /* c8 ignore start */
+        if (this !== this.#root)
+            return this.#root.toMMPattern();
+        /* c8 ignore stop */
+        const glob = this.toString();
+        const [re, body, hasMagic, uflag] = this.toRegExpSource();
+        // if we're in nocase mode, and not nocaseMagicOnly, then we do
+        // still need a regular expression if we have to case-insensitively
+        // match capital/lowercase characters.
+        const anyMagic = hasMagic ||
+            this.#hasMagic ||
+            (this.#options.nocase &&
+                !this.#options.nocaseMagicOnly &&
+                glob.toUpperCase() !== glob.toLowerCase());
+        if (!anyMagic) {
+            return body;
+        }
+        const flags = (this.#options.nocase ? 'i' : '') + (uflag ? 'u' : '');
+        return Object.assign(new RegExp(`^${re}$`, flags), {
+            _src: re,
+            _glob: glob,
+        });
+    }
+    get options() {
+        return this.#options;
+    }
+    // returns the string match, the regexp source, whether there's magic
+    // in the regexp (so a regular expression is required) and whether or
+    // not the uflag is needed for the regular expression (for posix classes)
+    // TODO: instead of injecting the start/end at this point, just return
+    // the BODY of the regexp, along with the start/end portions suitable
+    // for binding the start/end in either a joined full-path makeRe context
+    // (where we bind to (^|/), or a standalone matchPart context (where
+    // we bind to ^, and not /).  Otherwise slashes get duped!
+    //
+    // In part-matching mode, the start is:
+    // - if not isStart: nothing
+    // - if traversal possible, but not allowed: ^(?!\.\.?$)
+    // - if dots allowed or not possible: ^
+    // - if dots possible and not allowed: ^(?!\.)
+    // end is:
+    // - if not isEnd(): nothing
+    // - else: $
+    //
+    // In full-path matching mode, we put the slash at the START of the
+    // pattern, so start is:
+    // - if first pattern: same as part-matching mode
+    // - if not isStart(): nothing
+    // - if traversal possible, but not allowed: /(?!\.\.?(?:$|/))
+    // - if dots allowed or not possible: /
+    // - if dots possible and not allowed: /(?!\.)
+    // end is:
+    // - if last pattern, same as part-matching mode
+    // - else nothing
+    //
+    // Always put the (?:$|/) on negated tails, though, because that has to be
+    // there to bind the end of the negated pattern portion, and it's easier to
+    // just stick it in now rather than try to inject it later in the middle of
+    // the pattern.
+    //
+    // We can just always return the same end, and leave it up to the caller
+    // to know whether it's going to be used joined or in parts.
+    // And, if the start is adjusted slightly, can do the same there:
+    // - if not isStart: nothing
+    // - if traversal possible, but not allowed: (?:/|^)(?!\.\.?$)
+    // - if dots allowed or not possible: (?:/|^)
+    // - if dots possible and not allowed: (?:/|^)(?!\.)
+    //
+    // But it's better to have a simpler binding without a conditional, for
+    // performance, so probably better to return both start options.
+    //
+    // Then the caller just ignores the end if it's not the first pattern,
+    // and the start always gets applied.
+    //
+    // But that's always going to be $ if it's the ending pattern, or nothing,
+    // so the caller can just attach $ at the end of the pattern when building.
+    //
+    // So the todo is:
+    // - better detect what kind of start is needed
+    // - return both flavors of starting pattern
+    // - attach $ at the end of the pattern when creating the actual RegExp
+    //
+    // Ah, but wait, no, that all only applies to the root when the first pattern
+    // is not an extglob. If the first pattern IS an extglob, then we need all
+    // that dot prevention biz to live in the extglob portions, because eg
+    // +(*|.x*) can match .xy but not .yx.
+    //
+    // So, return the two flavors if it's #root and the first child is not an
+    // AST, otherwise leave it to the child AST to handle it, and there,
+    // use the (?:^|/) style of start binding.
+    //
+    // Even simplified further:
+    // - Since the start for a join is eg /(?!\.) and the start for a part
+    // is ^(?!\.), we can just prepend (?!\.) to the pattern (either root
+    // or start or whatever) and prepend ^ or / at the Regexp construction.
+    toRegExpSource(allowDot) {
+        const dot = allowDot ?? !!this.#options.dot;
+        if (this.#root === this) {
+            this.#flatten();
+            this.#fillNegs();
+        }
+        if (!isExtglobAST(this)) {
+            const noEmpty = this.isStart() &&
+                this.isEnd() &&
+                !this.#parts.some(s => typeof s !== 'string');
+            const src = this.#parts
+                .map(p => {
+                const [re, _, hasMagic, uflag] = typeof p === 'string' ?
+                    _a.#parseGlob(p, this.#hasMagic, noEmpty)
+                    : p.toRegExpSource(allowDot);
+                this.#hasMagic = this.#hasMagic || hasMagic;
+                this.#uflag = this.#uflag || uflag;
+                return re;
+            })
+                .join('');
+            let start = '';
+            if (this.isStart()) {
+                if (typeof this.#parts[0] === 'string') {
+                    // this is the string that will match the start of the pattern,
+                    // so we need to protect against dots and such.
+                    // '.' and '..' cannot match unless the pattern is that exactly,
+                    // even if it starts with . or dot:true is set.
+                    const dotTravAllowed = this.#parts.length === 1 && justDots.has(this.#parts[0]);
+                    if (!dotTravAllowed) {
+                        const aps = addPatternStart;
+                        // check if we have a possibility of matching . or ..,
+                        // and prevent that.
+                        const needNoTrav = 
+                        // dots are allowed, and the pattern starts with [ or .
+                        (dot && aps.has(src.charAt(0))) ||
+                            // the pattern starts with \., and then [ or .
+                            (src.startsWith('\\.') && aps.has(src.charAt(2))) ||
+                            // the pattern starts with \.\., and then [ or .
+                            (src.startsWith('\\.\\.') && aps.has(src.charAt(4)));
+                        // no need to prevent dots if it can't match a dot, or if a
+                        // sub-pattern will be preventing it anyway.
+                        const needNoDot = !dot && !allowDot && aps.has(src.charAt(0));
+                        start =
+                            needNoTrav ? startNoTraversal
+                                : needNoDot ? startNoDot
+                                    : '';
+                    }
+                }
+            }
+            // append the "end of path portion" pattern to negation tails
+            let end = '';
+            if (this.isEnd() &&
+                this.#root.#filledNegs &&
+                this.#parent?.type === '!') {
+                end = '(?:$|\\/)';
+            }
+            const final = start + src + end;
+            return [
+                final,
+                unescape_unescape(src),
+                (this.#hasMagic = !!this.#hasMagic),
+                this.#uflag,
+            ];
+        }
+        // We need to calculate the body *twice* if it's a repeat pattern
+        // at the start, once in nodot mode, then again in dot mode, so a
+        // pattern like *(?) can match 'x.y'
+        const repeated = this.type === '*' || this.type === '+';
+        // some kind of extglob
+        const start = this.type === '!' ? '(?:(?!(?:' : '(?:';
+        let body = this.#partsToRegExp(dot);
+        if (this.isStart() && this.isEnd() && !body && this.type !== '!') {
+            // invalid extglob, has to at least be *something* present, if it's
+            // the entire path portion.
+            const s = this.toString();
+            const me = this;
+            me.#parts = [s];
+            me.type = null;
+            me.#hasMagic = undefined;
+            return [s, unescape_unescape(this.toString()), false, false];
+        }
+        let bodyDotAllowed = !repeated || allowDot || dot || !startNoDot ?
+            ''
+            : this.#partsToRegExp(true);
+        if (bodyDotAllowed === body) {
+            bodyDotAllowed = '';
+        }
+        if (bodyDotAllowed) {
+            body = `(?:${body})(?:${bodyDotAllowed})*?`;
+        }
+        // an empty !() is exactly equivalent to a starNoEmpty
+        let final = '';
+        if (this.type === '!' && this.#emptyExt) {
+            final = (this.isStart() && !dot ? startNoDot : '') + starNoEmpty;
+        }
+        else {
+            const close = this.type === '!' ?
+                // !() must match something,but !(x) can match ''
+                '))' +
+                    (this.isStart() && !dot && !allowDot ? startNoDot : '') +
+                    star +
+                    ')'
+                : this.type === '@' ? ')'
+                    : this.type === '?' ? ')?'
+                        : this.type === '+' && bodyDotAllowed ? ')'
+                            : this.type === '*' && bodyDotAllowed ? `)?`
+                                : `)${this.type}`;
+            final = start + body + close;
+        }
+        return [
+            final,
+            unescape_unescape(body),
+            (this.#hasMagic = !!this.#hasMagic),
+            this.#uflag,
+        ];
+    }
+    #flatten() {
+        if (!isExtglobAST(this)) {
+            for (const p of this.#parts) {
+                if (typeof p === 'object') {
+                    p.#flatten();
+                }
+            }
+        }
+        else {
+            // do up to 10 passes to flatten as much as possible
+            let iterations = 0;
+            let done = false;
+            do {
+                done = true;
+                for (let i = 0; i < this.#parts.length; i++) {
+                    const c = this.#parts[i];
+                    if (typeof c === 'object') {
+                        c.#flatten();
+                        if (this.#canAdopt(c)) {
+                            done = false;
+                            this.#adopt(c, i);
+                        }
+                        else if (this.#canAdoptWithSpace(c)) {
+                            done = false;
+                            this.#adoptWithSpace(c, i);
+                        }
+                        else if (this.#canUsurp(c)) {
+                            done = false;
+                            this.#usurp(c);
+                        }
+                    }
+                }
+            } while (!done && ++iterations < 10);
+        }
+        this.#toString = undefined;
+    }
+    #partsToRegExp(dot) {
+        return this.#parts
+            .map(p => {
+            // extglob ASTs should only contain parent ASTs
+            /* c8 ignore start */
+            if (typeof p === 'string') {
+                throw new Error('string type in extglob ast??');
+            }
+            /* c8 ignore stop */
+            // can ignore hasMagic, because extglobs are already always magic
+            const [re, _, _hasMagic, uflag] = p.toRegExpSource(dot);
+            this.#uflag = this.#uflag || uflag;
+            return re;
+        })
+            .filter(p => !(this.isStart() && this.isEnd()) || !!p)
+            .join('|');
+    }
+    static #parseGlob(glob, hasMagic, noEmpty = false) {
+        let escaping = false;
+        let re = '';
+        let uflag = false;
+        // multiple stars that aren't globstars coalesce into one *
+        let inStar = false;
+        for (let i = 0; i < glob.length; i++) {
+            const c = glob.charAt(i);
+            if (escaping) {
+                escaping = false;
+                re += (reSpecials.has(c) ? '\\' : '') + c;
+                continue;
+            }
+            if (c === '*') {
+                if (inStar)
+                    continue;
+                inStar = true;
+                re += noEmpty && /^[*]+$/.test(glob) ? starNoEmpty : star;
+                hasMagic = true;
+                continue;
+            }
+            else {
+                inStar = false;
+            }
+            if (c === '\\') {
+                if (i === glob.length - 1) {
+                    re += '\\\\';
+                }
+                else {
+                    escaping = true;
+                }
+                continue;
+            }
+            if (c === '[') {
+                const [src, needUflag, consumed, magic] = parseClass(glob, i);
+                if (consumed) {
+                    re += src;
+                    uflag = uflag || needUflag;
+                    i += consumed - 1;
+                    hasMagic = hasMagic || magic;
+                    continue;
+                }
+            }
+            if (c === '?') {
+                re += qmark;
+                hasMagic = true;
+                continue;
+            }
+            re += regExpEscape(c);
+        }
+        return [re, unescape_unescape(glob), !!hasMagic, uflag];
+    }
+}
+_a = AST;
+//# sourceMappingURL=ast.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/minimatch@10.2.6/node_modules/minimatch/dist/esm/escape.js
+/**
+ * Escape all magic characters in a glob pattern.
+ *
+ * If the {@link MinimatchOptions.windowsPathsNoEscape}
+ * option is used, then characters are escaped by wrapping in `[]`, because
+ * a magic character wrapped in a character class can only be satisfied by
+ * that exact character.  In this mode, `\` is _not_ escaped, because it is
+ * not interpreted as a magic character, but instead as a path separator.
+ *
+ * If the {@link MinimatchOptions.magicalBraces} option is used,
+ * then braces (`{` and `}`) will be escaped.
+ */
+const escape_escape = (s, { windowsPathsNoEscape = false, magicalBraces = false, } = {}) => {
+    // don't need to escape +@! because we escape the parens
+    // that make those magic, and escaping ! as [!] isn't valid,
+    // because [!]] is a valid glob class meaning not ']'.
+    if (magicalBraces) {
+        return windowsPathsNoEscape ?
+            s.replace(/[?*()[\]{}]/g, '[$&]')
+            : s.replace(/[?*()[\]\\{}]/g, '\\$&');
+    }
+    return windowsPathsNoEscape ?
+        s.replace(/[?*()[\]]/g, '[$&]')
+        : s.replace(/[?*()[\]\\]/g, '\\$&');
+};
+//# sourceMappingURL=escape.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/minimatch@10.2.6/node_modules/minimatch/dist/esm/index.js
+
+
+
+
+
+const minimatch = (p, pattern, options = {}) => {
+    assertValidPattern(pattern);
+    // shortcut: comments match nothing.
+    if (!options.nocomment && pattern.charAt(0) === '#') {
+        return false;
+    }
+    return new Minimatch(pattern, options).match(p);
+};
+// Optimized checking for the most common glob patterns.
+const starDotExtRE = /^\*+([^+@!?*[(]*)$/;
+const starDotExtTest = (ext) => (f) => !f.startsWith('.') && f.endsWith(ext);
+const starDotExtTestDot = (ext) => (f) => f.endsWith(ext);
+const starDotExtTestNocase = (ext) => {
+    ext = ext.toLowerCase();
+    return (f) => !f.startsWith('.') && f.toLowerCase().endsWith(ext);
+};
+const starDotExtTestNocaseDot = (ext) => {
+    ext = ext.toLowerCase();
+    return (f) => f.toLowerCase().endsWith(ext);
+};
+const starDotStarRE = /^\*+\.\*+$/;
+const starDotStarTest = (f) => !f.startsWith('.') && f.includes('.');
+const starDotStarTestDot = (f) => f !== '.' && f !== '..' && f.includes('.');
+const dotStarRE = /^\.\*+$/;
+const dotStarTest = (f) => f !== '.' && f !== '..' && f.startsWith('.');
+const starRE = /^\*+$/;
+const starTest = (f) => f.length !== 0 && !f.startsWith('.');
+const starTestDot = (f) => f.length !== 0 && f !== '.' && f !== '..';
+const qmarksRE = /^\?+([^+@!?*[(]*)?$/;
+const qmarksTestNocase = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExt([$0]);
+    if (!ext)
+        return noext;
+    ext = ext.toLowerCase();
+    return (f) => noext(f) && f.toLowerCase().endsWith(ext);
+};
+const qmarksTestNocaseDot = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExtDot([$0]);
+    if (!ext)
+        return noext;
+    ext = ext.toLowerCase();
+    return (f) => noext(f) && f.toLowerCase().endsWith(ext);
+};
+const qmarksTestDot = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExtDot([$0]);
+    return !ext ? noext : (f) => noext(f) && f.endsWith(ext);
+};
+const qmarksTest = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExt([$0]);
+    return !ext ? noext : (f) => noext(f) && f.endsWith(ext);
+};
+const qmarksTestNoExt = ([$0]) => {
+    const len = $0.length;
+    return (f) => f.length === len && !f.startsWith('.');
+};
+const qmarksTestNoExtDot = ([$0]) => {
+    const len = $0.length;
+    return (f) => f.length === len && f !== '.' && f !== '..';
+};
+/* c8 ignore start */
+const defaultPlatform = (typeof process === 'object' && process ?
+    (typeof process.env === 'object' &&
+        process.env &&
+        process.env.__MINIMATCH_TESTING_PLATFORM__) ||
+        process.platform
+    : 'posix');
+const esm_path = {
+    win32: { sep: '\\' },
+    posix: { sep: '/' },
+};
+/* c8 ignore stop */
+const sep = defaultPlatform === 'win32' ? esm_path.win32.sep : esm_path.posix.sep;
+minimatch.sep = sep;
+const GLOBSTAR = Symbol('globstar **');
+minimatch.GLOBSTAR = GLOBSTAR;
+// any single thing other than /
+// don't need to escape / when using new RegExp()
+const esm_qmark = '[^/]';
+// * => any number of characters
+const esm_star = esm_qmark + '*?';
+// ** when dots are allowed.  Anything goes, except .. and .
+// not (^ or / followed by one or two dots followed by $ or /),
+// followed by anything, any number of times.
+const twoStarDot = '(?:(?!(?:\\/|^)(?:\\.{1,2})($|\\/)).)*?';
+// not a ^ or / followed by a dot,
+// followed by anything, any number of times.
+const twoStarNoDot = '(?:(?!(?:\\/|^)\\.).)*?';
+const filter = (pattern, options = {}) => (p) => minimatch(p, pattern, options);
+minimatch.filter = filter;
+const ext = (a, b = {}) => Object.assign({}, a, b);
+const defaults = (def) => {
+    if (!def || typeof def !== 'object' || !Object.keys(def).length) {
+        return minimatch;
+    }
+    const orig = minimatch;
+    const m = (p, pattern, options = {}) => orig(p, pattern, ext(def, options));
+    return Object.assign(m, {
+        Minimatch: class Minimatch extends orig.Minimatch {
+            constructor(pattern, options = {}) {
+                super(pattern, ext(def, options));
+            }
+            static defaults(options) {
+                return orig.defaults(ext(def, options)).Minimatch;
+            }
+        },
+        AST: class AST extends orig.AST {
+            /* c8 ignore start */
+            constructor(type, parent, options = {}) {
+                super(type, parent, ext(def, options));
+            }
+            /* c8 ignore stop */
+            static fromGlob(pattern, options = {}) {
+                return orig.AST.fromGlob(pattern, ext(def, options));
+            }
+        },
+        unescape: (s, options = {}) => orig.unescape(s, ext(def, options)),
+        escape: (s, options = {}) => orig.escape(s, ext(def, options)),
+        filter: (pattern, options = {}) => orig.filter(pattern, ext(def, options)),
+        defaults: (options) => orig.defaults(ext(def, options)),
+        makeRe: (pattern, options = {}) => orig.makeRe(pattern, ext(def, options)),
+        braceExpand: (pattern, options = {}) => orig.braceExpand(pattern, ext(def, options)),
+        match: (list, pattern, options = {}) => orig.match(list, pattern, ext(def, options)),
+        sep: orig.sep,
+        GLOBSTAR: GLOBSTAR,
+    });
+};
+minimatch.defaults = defaults;
+// Brace expansion:
+// a{b,c}d -> abd acd
+// a{b,}c -> abc ac
+// a{0..3}d -> a0d a1d a2d a3d
+// a{b,c{d,e}f}g -> abg acdfg acefg
+// a{b,c}d{e,f}g -> abdeg acdeg abdeg abdfg
+//
+// Invalid sets are not expanded.
+// a{2..}b -> a{2..}b
+// a{b}c -> a{b}c
+const braceExpand = (pattern, options = {}) => {
+    assertValidPattern(pattern);
+    // Thanks to Yeting Li <https://github.com/yetingli> for
+    // improving this regexp to avoid a ReDOS vulnerability.
+    if (options.nobrace || !/\{(?:(?!\{).)*\}/.test(pattern)) {
+        // shortcut. no need to expand.
+        return [pattern];
+    }
+    return expand(pattern, { max: options.braceExpandMax });
+};
+minimatch.braceExpand = braceExpand;
+// parse a component of the expanded set.
+// At this point, no pattern may contain "/" in it
+// so we're going to return a 2d array, where each entry is the full
+// pattern, split on '/', and then turned into a regular expression.
+// A regexp is made at the end which joins each array with an
+// escaped /, and another full one which joins each regexp with |.
+//
+// Following the lead of Bash 4.1, note that "**" only has special meaning
+// when it is the *only* thing in a path portion.  Otherwise, any series
+// of * is equivalent to a single *.  Globstar behavior is enabled by
+// default, and can be disabled by setting options.noglobstar.
+const makeRe = (pattern, options = {}) => new Minimatch(pattern, options).makeRe();
+minimatch.makeRe = makeRe;
+const match = (list, pattern, options = {}) => {
+    const mm = new Minimatch(pattern, options);
+    list = list.filter(f => mm.match(f));
+    if (mm.options.nonull && !list.length) {
+        list.push(pattern);
+    }
+    return list;
+};
+minimatch.match = match;
+// replace stuff like \* with *
+const globMagic = /[?*]|[+@!]\(.*?\)|\[|\]/;
+const esm_regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+class Minimatch {
+    options;
+    set;
+    pattern;
+    windowsPathsNoEscape;
+    nonegate;
+    negate;
+    comment;
+    empty;
+    preserveMultipleSlashes;
+    partial;
+    globSet;
+    globParts;
+    nocase;
+    isWindows;
+    platform;
+    windowsNoMagicRoot;
+    maxGlobstarRecursion;
+    regexp;
+    constructor(pattern, options = {}) {
+        assertValidPattern(pattern);
+        options = options || {};
+        this.options = options;
+        this.maxGlobstarRecursion = options.maxGlobstarRecursion ?? 200;
+        this.pattern = pattern;
+        this.platform = options.platform || defaultPlatform;
+        this.isWindows = this.platform === 'win32';
+        // avoid the annoying deprecation flag lol
+        const awe = ('allowWindow' + 'sEscape');
+        this.windowsPathsNoEscape =
+            !!options.windowsPathsNoEscape || options[awe] === false;
+        if (this.windowsPathsNoEscape) {
+            this.pattern = this.pattern.replace(/\\/g, '/');
+        }
+        this.preserveMultipleSlashes = !!options.preserveMultipleSlashes;
+        this.regexp = null;
+        this.negate = false;
+        this.nonegate = !!options.nonegate;
+        this.comment = false;
+        this.empty = false;
+        this.partial = !!options.partial;
+        this.nocase = !!this.options.nocase;
+        this.windowsNoMagicRoot =
+            options.windowsNoMagicRoot !== undefined ?
+                options.windowsNoMagicRoot
+                : !!(this.isWindows && this.nocase);
+        this.globSet = [];
+        this.globParts = [];
+        this.set = [];
+        // make the set of regexps etc.
+        this.make();
+    }
+    hasMagic() {
+        if (this.options.magicalBraces && this.set.length > 1) {
+            return true;
+        }
+        for (const pattern of this.set) {
+            for (const part of pattern) {
+                if (typeof part !== 'string')
+                    return true;
+            }
+        }
+        return false;
+    }
+    debug(..._) { }
+    make() {
+        const pattern = this.pattern;
+        const options = this.options;
+        // empty patterns and comments match nothing.
+        if (!options.nocomment && pattern.charAt(0) === '#') {
+            this.comment = true;
+            return;
+        }
+        if (!pattern) {
+            this.empty = true;
+            return;
+        }
+        // step 1: figure out negation, etc.
+        this.parseNegate();
+        // step 2: expand braces
+        this.globSet = [...new Set(this.braceExpand())];
+        if (options.debug) {
+            //oxlint-disable-next-line no-console
+            this.debug = (...args) => console.error(...args);
+        }
+        this.debug(this.pattern, this.globSet);
+        // step 3: now we have a set, so turn each one into a series of
+        // path-portion matching patterns.
+        // These will be regexps, except in the case of "**", which is
+        // set to the GLOBSTAR object for globstar behavior,
+        // and will not contain any / characters
+        //
+        // First, we preprocess to make the glob pattern sets a bit simpler
+        // and deduped.  There are some perf-killing patterns that can cause
+        // problems with a glob walk, but we can simplify them down a bit.
+        const rawGlobParts = this.globSet.map(s => this.slashSplit(s));
+        this.globParts = this.preprocess(rawGlobParts);
+        this.debug(this.pattern, this.globParts);
+        // glob --> regexps
+        let set = this.globParts.map((s, _, __) => {
+            if (this.isWindows && this.windowsNoMagicRoot) {
+                // check if it's a drive or unc path.
+                const isUNC = s[0] === '' &&
+                    s[1] === '' &&
+                    (s[2] === '?' || !globMagic.test(s[2])) &&
+                    !globMagic.test(s[3]);
+                const isDrive = /^[a-z]:/i.test(s[0]);
+                if (isUNC) {
+                    return [
+                        ...s.slice(0, 4),
+                        ...s.slice(4).map(ss => this.parse(ss)),
+                    ];
+                }
+                else if (isDrive) {
+                    return [s[0], ...s.slice(1).map(ss => this.parse(ss))];
+                }
+            }
+            return s.map(ss => this.parse(ss));
+        });
+        this.debug(this.pattern, set);
+        // filter out everything that didn't compile properly.
+        this.set = set.filter(s => s.indexOf(false) === -1);
+        // do not treat the ? in UNC paths as magic
+        if (this.isWindows) {
+            for (let i = 0; i < this.set.length; i++) {
+                const p = this.set[i];
+                if (p[0] === '' &&
+                    p[1] === '' &&
+                    this.globParts[i][2] === '?' &&
+                    typeof p[3] === 'string' &&
+                    /^[a-z]:$/i.test(p[3])) {
+                    p[2] = '?';
+                }
+            }
+        }
+        this.debug(this.pattern, this.set);
+    }
+    // various transforms to equivalent pattern sets that are
+    // faster to process in a filesystem walk.  The goal is to
+    // eliminate what we can, and push all ** patterns as far
+    // to the right as possible, even if it increases the number
+    // of patterns that we have to process.
+    preprocess(globParts) {
+        // if we're not in globstar mode, then turn ** into *
+        if (this.options.noglobstar) {
+            for (const partset of globParts) {
+                for (let j = 0; j < partset.length; j++) {
+                    if (partset[j] === '**') {
+                        partset[j] = '*';
+                    }
+                }
+            }
+        }
+        const { optimizationLevel = 1 } = this.options;
+        if (optimizationLevel >= 2) {
+            // aggressive optimization for the purpose of fs walking
+            globParts = this.firstPhasePreProcess(globParts);
+            globParts = this.secondPhasePreProcess(globParts);
+        }
+        else if (optimizationLevel >= 1) {
+            // just basic optimizations to remove some .. parts
+            globParts = this.levelOneOptimize(globParts);
+        }
+        else {
+            // just collapse multiple ** portions into one
+            globParts = this.adjascentGlobstarOptimize(globParts);
+        }
+        return globParts;
+    }
+    // just get rid of adjascent ** portions
+    adjascentGlobstarOptimize(globParts) {
+        return globParts.map(parts => {
+            let gs = -1;
+            while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
+                let i = gs;
+                while (parts[i + 1] === '**') {
+                    i++;
+                }
+                if (i !== gs) {
+                    parts.splice(gs, i - gs);
+                }
+            }
+            return parts;
+        });
+    }
+    // get rid of adjascent ** and resolve .. portions
+    levelOneOptimize(globParts) {
+        return globParts.map(parts => {
+            parts = parts.reduce((set, part) => {
+                const prev = set[set.length - 1];
+                if (part === '**' && prev === '**') {
+                    return set;
+                }
+                if (part === '..') {
+                    if (prev && prev !== '..' && prev !== '.' && prev !== '**') {
+                        set.pop();
+                        return set;
+                    }
+                }
+                set.push(part);
+                return set;
+            }, []);
+            return parts.length === 0 ? [''] : parts;
+        });
+    }
+    levelTwoFileOptimize(parts) {
+        if (!Array.isArray(parts)) {
+            parts = this.slashSplit(parts);
+        }
+        let didSomething = false;
+        do {
+            didSomething = false;
+            // <pre>/<e>/<rest> -> <pre>/<rest>
+            if (!this.preserveMultipleSlashes) {
+                for (let i = 1; i < parts.length - 1; i++) {
+                    const p = parts[i];
+                    // don't squeeze out UNC patterns
+                    if (i === 1 && p === '' && parts[0] === '')
+                        continue;
+                    if (p === '.' || p === '') {
+                        didSomething = true;
+                        parts.splice(i, 1);
+                        i--;
+                    }
+                }
+                if (parts[0] === '.' &&
+                    parts.length === 2 &&
+                    (parts[1] === '.' || parts[1] === '')) {
+                    didSomething = true;
+                    parts.pop();
+                }
+            }
+            // <pre>/<p>/../<rest> -> <pre>/<rest>
+            let dd = 0;
+            while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
+                const p = parts[dd - 1];
+                if (p &&
+                    p !== '.' &&
+                    p !== '..' &&
+                    p !== '**' &&
+                    !(this.isWindows && /^[a-z]:$/i.test(p))) {
+                    didSomething = true;
+                    parts.splice(dd - 1, 2);
+                    dd -= 2;
+                }
+            }
+        } while (didSomething);
+        return parts.length === 0 ? [''] : parts;
+    }
+    // First phase: single-pattern processing
+    // <pre> is 1 or more portions
+    // <rest> is 1 or more portions
+    // <p> is any portion other than ., .., '', or **
+    // <e> is . or ''
+    //
+    // **/.. is *brutal* for filesystem walking performance, because
+    // it effectively resets the recursive walk each time it occurs,
+    // and ** cannot be reduced out by a .. pattern part like a regexp
+    // or most strings (other than .., ., and '') can be.
+    //
+    // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
+    // <pre>/<e>/<rest> -> <pre>/<rest>
+    // <pre>/<p>/../<rest> -> <pre>/<rest>
+    // **/**/<rest> -> **/<rest>
+    //
+    // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
+    // this WOULD be allowed if ** did follow symlinks, or * didn't
+    firstPhasePreProcess(globParts) {
+        let didSomething = false;
+        do {
+            didSomething = false;
+            // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
+            for (let parts of globParts) {
+                let gs = -1;
+                while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
+                    let gss = gs;
+                    while (parts[gss + 1] === '**') {
+                        // <pre>/**/**/<rest> -> <pre>/**/<rest>
+                        gss++;
+                    }
+                    // eg, if gs is 2 and gss is 4, that means we have 3 **
+                    // parts, and can remove 2 of them.
+                    if (gss > gs) {
+                        parts.splice(gs + 1, gss - gs);
+                    }
+                    let next = parts[gs + 1];
+                    const p = parts[gs + 2];
+                    const p2 = parts[gs + 3];
+                    if (next !== '..')
+                        continue;
+                    if (!p ||
+                        p === '.' ||
+                        p === '..' ||
+                        !p2 ||
+                        p2 === '.' ||
+                        p2 === '..') {
+                        continue;
+                    }
+                    didSomething = true;
+                    // edit parts in place, and push the new one
+                    parts.splice(gs, 1);
+                    const other = parts.slice(0);
+                    other[gs] = '**';
+                    globParts.push(other);
+                    gs--;
+                }
+                // <pre>/<e>/<rest> -> <pre>/<rest>
+                if (!this.preserveMultipleSlashes) {
+                    for (let i = 1; i < parts.length - 1; i++) {
+                        const p = parts[i];
+                        // don't squeeze out UNC patterns
+                        if (i === 1 && p === '' && parts[0] === '')
+                            continue;
+                        if (p === '.' || p === '') {
+                            didSomething = true;
+                            parts.splice(i, 1);
+                            i--;
+                        }
+                    }
+                    if (parts[0] === '.' &&
+                        parts.length === 2 &&
+                        (parts[1] === '.' || parts[1] === '')) {
+                        didSomething = true;
+                        parts.pop();
+                    }
+                }
+                // <pre>/<p>/../<rest> -> <pre>/<rest>
+                let dd = 0;
+                while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
+                    const p = parts[dd - 1];
+                    if (p && p !== '.' && p !== '..' && p !== '**') {
+                        didSomething = true;
+                        const needDot = dd === 1 && parts[dd + 1] === '**';
+                        const splin = needDot ? ['.'] : [];
+                        parts.splice(dd - 1, 2, ...splin);
+                        if (parts.length === 0)
+                            parts.push('');
+                        dd -= 2;
+                    }
+                }
+            }
+        } while (didSomething);
+        return globParts;
+    }
+    // second phase: multi-pattern dedupes
+    // {<pre>/*/<rest>,<pre>/<p>/<rest>} -> <pre>/*/<rest>
+    // {<pre>/<rest>,<pre>/<rest>} -> <pre>/<rest>
+    // {<pre>/**/<rest>,<pre>/<rest>} -> <pre>/**/<rest>
+    //
+    // {<pre>/**/<rest>,<pre>/**/<p>/<rest>} -> <pre>/**/<rest>
+    // ^-- not valid because ** doens't follow symlinks
+    secondPhasePreProcess(globParts) {
+        for (let i = 0; i < globParts.length - 1; i++) {
+            for (let j = i + 1; j < globParts.length; j++) {
+                const matched = this.partsMatch(globParts[i], globParts[j], !this.preserveMultipleSlashes);
+                if (matched) {
+                    globParts[i] = [];
+                    globParts[j] = matched;
+                    break;
+                }
+            }
+        }
+        return globParts.filter(gs => gs.length);
+    }
+    partsMatch(a, b, emptyGSMatch = false) {
+        let ai = 0;
+        let bi = 0;
+        let result = [];
+        let which = '';
+        while (ai < a.length && bi < b.length) {
+            if (a[ai] === b[bi]) {
+                result.push(which === 'b' ? b[bi] : a[ai]);
+                ai++;
+                bi++;
+            }
+            else if (emptyGSMatch && a[ai] === '**' && b[bi] === a[ai + 1]) {
+                result.push(a[ai]);
+                ai++;
+            }
+            else if (emptyGSMatch && b[bi] === '**' && a[ai] === b[bi + 1]) {
+                result.push(b[bi]);
+                bi++;
+            }
+            else if (a[ai] === '*' &&
+                b[bi] &&
+                (this.options.dot || !b[bi].startsWith('.')) &&
+                b[bi] !== '**') {
+                if (which === 'b')
+                    return false;
+                which = 'a';
+                result.push(a[ai]);
+                ai++;
+                bi++;
+            }
+            else if (b[bi] === '*' &&
+                a[ai] &&
+                (this.options.dot || !a[ai].startsWith('.')) &&
+                a[ai] !== '**') {
+                if (which === 'a')
+                    return false;
+                which = 'b';
+                result.push(b[bi]);
+                ai++;
+                bi++;
+            }
+            else {
+                return false;
+            }
+        }
+        // if we fall out of the loop, it means they two are identical
+        // as long as their lengths match
+        return a.length === b.length && result;
+    }
+    parseNegate() {
+        if (this.nonegate)
+            return;
+        const pattern = this.pattern;
+        let negate = false;
+        let negateOffset = 0;
+        for (let i = 0; i < pattern.length && pattern.charAt(i) === '!'; i++) {
+            negate = !negate;
+            negateOffset++;
+        }
+        if (negateOffset)
+            this.pattern = pattern.slice(negateOffset);
+        this.negate = negate;
+    }
+    // set partial to true to test if, for example,
+    // "/a/b" matches the start of "/*/b/*/d"
+    // Partial means, if you run out of file before you run
+    // out of pattern, then that's fine, as long as all
+    // the parts match.
+    matchOne(file, pattern, partial = false) {
+        let fileStartIndex = 0;
+        let patternStartIndex = 0;
+        // UNC paths like //?/X:/... can match X:/... and vice versa
+        // Drive letters in absolute drive or unc paths are always compared
+        // case-insensitively.
+        if (this.isWindows) {
+            const fileDrive = typeof file[0] === 'string' && /^[a-z]:$/i.test(file[0]);
+            const fileUNC = !fileDrive &&
+                file[0] === '' &&
+                file[1] === '' &&
+                file[2] === '?' &&
+                /^[a-z]:$/i.test(file[3]);
+            const patternDrive = typeof pattern[0] === 'string' && /^[a-z]:$/i.test(pattern[0]);
+            const patternUNC = !patternDrive &&
+                pattern[0] === '' &&
+                pattern[1] === '' &&
+                pattern[2] === '?' &&
+                typeof pattern[3] === 'string' &&
+                /^[a-z]:$/i.test(pattern[3]);
+            const fdi = fileUNC ? 3
+                : fileDrive ? 0
+                    : undefined;
+            const pdi = patternUNC ? 3
+                : patternDrive ? 0
+                    : undefined;
+            if (typeof fdi === 'number' && typeof pdi === 'number') {
+                const [fd, pd] = [
+                    file[fdi],
+                    pattern[pdi],
+                ];
+                // start matching at the drive letter index of each
+                if (fd.toLowerCase() === pd.toLowerCase()) {
+                    pattern[pdi] = fd;
+                    patternStartIndex = pdi;
+                    fileStartIndex = fdi;
+                }
+            }
+        }
+        // resolve and reduce . and .. portions in the file as well.
+        // don't need to do the second phase, because it's only one string[]
+        const { optimizationLevel = 1 } = this.options;
+        if (optimizationLevel >= 2) {
+            file = this.levelTwoFileOptimize(file);
+        }
+        if (pattern.includes(GLOBSTAR)) {
+            return this.#matchGlobstar(file, pattern, partial, fileStartIndex, patternStartIndex);
+        }
+        return this.#matchOne(file, pattern, partial, fileStartIndex, patternStartIndex);
+    }
+    #matchGlobstar(file, pattern, partial, fileIndex, patternIndex) {
+        // split the pattern into head, tail, and middle of ** delimited parts
+        const firstgs = pattern.indexOf(GLOBSTAR, patternIndex);
+        const lastgs = pattern.lastIndexOf(GLOBSTAR);
+        // split the pattern up into globstar-delimited sections
+        // the tail has to be at the end, and the others just have
+        // to be found in order from the head.
+        const [head, body, tail] = partial ?
+            [
+                pattern.slice(patternIndex, firstgs),
+                pattern.slice(firstgs + 1),
+                [],
+            ]
+            : [
+                pattern.slice(patternIndex, firstgs),
+                pattern.slice(firstgs + 1, lastgs),
+                pattern.slice(lastgs + 1),
+            ];
+        // check the head, from the current file/pattern index.
+        if (head.length) {
+            const fileHead = file.slice(fileIndex, fileIndex + head.length);
+            if (!this.#matchOne(fileHead, head, partial, 0, 0)) {
+                return false;
+            }
+            fileIndex += head.length;
+            patternIndex += head.length;
+        }
+        // now we know the head matches!
+        // if the last portion is not empty, it MUST match the end
+        // check the tail
+        let fileTailMatch = 0;
+        if (tail.length) {
+            // if head + tail > file, then we cannot possibly match
+            if (tail.length + fileIndex > file.length)
+                return false;
+            // try to match the tail
+            let tailStart = file.length - tail.length;
+            if (this.#matchOne(file, tail, partial, tailStart, 0)) {
+                fileTailMatch = tail.length;
+            }
+            else {
+                // affordance for stuff like a/**/* matching a/b/
+                // if the last file portion is '', and there's more to the pattern
+                // then try without the '' bit.
+                if (file[file.length - 1] !== '' ||
+                    fileIndex + tail.length === file.length) {
+                    return false;
+                }
+                tailStart--;
+                if (!this.#matchOne(file, tail, partial, tailStart, 0)) {
+                    return false;
+                }
+                fileTailMatch = tail.length + 1;
+            }
+        }
+        // now we know the tail matches!
+        // the middle is zero or more portions wrapped in **, possibly
+        // containing more ** sections.
+        // so a/**/b/**/c/**/d has become **/b/**/c/**
+        // if it's empty, it means a/**/b, just verify we have no bad dots
+        // if there's no tail, so it ends on /**, then we must have *something*
+        // after the head, or it's not a matc
+        if (!body.length) {
+            let sawSome = !!fileTailMatch;
+            for (let i = fileIndex; i < file.length - fileTailMatch; i++) {
+                const f = String(file[i]);
+                sawSome = true;
+                if (f === '.' ||
+                    f === '..' ||
+                    (!this.options.dot && f.startsWith('.'))) {
+                    return false;
+                }
+            }
+            // in partial mode, we just need to get past all file parts
+            return partial || sawSome;
+        }
+        // now we know that there's one or more body sections, which can
+        // be matched anywhere from the 0 index (because the head was pruned)
+        // through to the length-fileTailMatch index.
+        // split the body up into sections, and note the minimum index it can
+        // be found at (start with the length of all previous segments)
+        // [section, before, after]
+        const bodySegments = [[[], 0]];
+        let currentBody = bodySegments[0];
+        let nonGsParts = 0;
+        const nonGsPartsSums = [0];
+        for (const b of body) {
+            if (b === GLOBSTAR) {
+                nonGsPartsSums.push(nonGsParts);
+                currentBody = [[], 0];
+                bodySegments.push(currentBody);
+            }
+            else {
+                currentBody[0].push(b);
+                nonGsParts++;
+            }
+        }
+        let i = bodySegments.length - 1;
+        const fileLength = file.length - fileTailMatch;
+        for (const b of bodySegments) {
+            b[1] = fileLength - (nonGsPartsSums[i--] + b[0].length);
+        }
+        return !!this.#matchGlobStarBodySections(file, bodySegments, fileIndex, 0, partial, 0, !!fileTailMatch);
+    }
+    // return false for "nope, not matching"
+    // return null for "not matching, cannot keep trying"
+    #matchGlobStarBodySections(file, 
+    // pattern section, last possible position for it
+    bodySegments, fileIndex, bodyIndex, partial, globStarDepth, sawTail) {
+        // take the first body segment, and walk from fileIndex to its "after"
+        // value at the end
+        // If it doesn't match at that position, we increment, until we hit
+        // that final possible position, and give up.
+        // If it does match, then advance and try to rest.
+        // If any of them fail we keep walking forward.
+        // this is still a bit recursively painful, but it's more constrained
+        // than previous implementations, because we never test something that
+        // can't possibly be a valid matching condition.
+        const bs = bodySegments[bodyIndex];
+        if (!bs) {
+            // just make sure that there's no bad dots
+            for (let i = fileIndex; i < file.length; i++) {
+                sawTail = true;
+                const f = file[i];
+                if (f === '.' ||
+                    f === '..' ||
+                    (!this.options.dot && f.startsWith('.'))) {
+                    return false;
+                }
+            }
+            return sawTail;
+        }
+        // have a non-globstar body section to test
+        const [body, after] = bs;
+        while (fileIndex <= after) {
+            const m = this.#matchOne(file.slice(0, fileIndex + body.length), body, partial, fileIndex, 0);
+            // if limit exceeded, no match. intentional false negative,
+            // acceptable break in correctness for security.
+            if (m && globStarDepth < this.maxGlobstarRecursion) {
+                // match! see if the rest match. if so, we're done!
+                const sub = this.#matchGlobStarBodySections(file, bodySegments, fileIndex + body.length, bodyIndex + 1, partial, globStarDepth + 1, sawTail);
+                if (sub !== false) {
+                    return sub;
+                }
+            }
+            const f = file[fileIndex];
+            if (f === '.' ||
+                f === '..' ||
+                (!this.options.dot && f.startsWith('.'))) {
+                return false;
+            }
+            fileIndex++;
+        }
+        // walked off. no point continuing
+        return partial || null;
+    }
+    #matchOne(file, pattern, partial, fileIndex, patternIndex) {
+        let fi;
+        let pi;
+        let pl;
+        let fl;
+        for (fi = fileIndex,
+            pi = patternIndex,
+            fl = file.length,
+            pl = pattern.length; fi < fl && pi < pl; fi++, pi++) {
+            this.debug('matchOne loop');
+            let p = pattern[pi];
+            let f = file[fi];
+            this.debug(pattern, p, f);
+            // should be impossible.
+            // some invalid regexp stuff in the set.
+            /* c8 ignore start */
+            if (p === false || p === GLOBSTAR) {
+                return false;
+            }
+            /* c8 ignore stop */
+            // something other than **
+            // non-magic patterns just have to match exactly
+            // patterns with magic have been turned into regexps.
+            let hit;
+            if (typeof p === 'string') {
+                hit = f === p;
+                this.debug('string match', p, f, hit);
+            }
+            else {
+                hit = p.test(f);
+                this.debug('pattern match', p, f, hit);
+            }
+            if (!hit)
+                return false;
+        }
+        // Note: ending in / means that we'll get a final ""
+        // at the end of the pattern.  This can only match a
+        // corresponding "" at the end of the file.
+        // If the file ends in /, then it can only match a
+        // a pattern that ends in /, unless the pattern just
+        // doesn't have any more for it. But, a/b/ should *not*
+        // match "a/b/*", even though "" matches against the
+        // [^/]*? pattern, except in partial mode, where it might
+        // simply not be reached yet.
+        // However, a/b/ should still satisfy a/*
+        // now either we fell off the end of the pattern, or we're done.
+        if (fi === fl && pi === pl) {
+            // ran out of pattern and filename at the same time.
+            // an exact hit!
+            return true;
+        }
+        else if (fi === fl) {
+            // ran out of file, but still had pattern left.
+            // this is ok if we're doing the match as part of
+            // a glob fs traversal.
+            return partial;
+        }
+        else if (pi === pl) {
+            // ran out of pattern, still have file left.
+            // this is only acceptable if we're on the very last
+            // empty segment of a file with a trailing slash.
+            // a/* should match a/b/
+            return fi === fl - 1 && file[fi] === '';
+            /* c8 ignore start */
+        }
+        else {
+            // should be unreachable.
+            throw new Error('wtf?');
+        }
+        /* c8 ignore stop */
+    }
+    braceExpand() {
+        return braceExpand(this.pattern, this.options);
+    }
+    parse(pattern) {
+        assertValidPattern(pattern);
+        const options = this.options;
+        // shortcuts
+        if (pattern === '**')
+            return GLOBSTAR;
+        if (pattern === '')
+            return '';
+        // far and away, the most common glob pattern parts are
+        // *, *.*, and *.<ext>  Add a fast check method for those.
+        let m;
+        let fastTest = null;
+        if ((m = pattern.match(starRE))) {
+            fastTest = options.dot ? starTestDot : starTest;
+        }
+        else if ((m = pattern.match(starDotExtRE))) {
+            fastTest = (options.nocase ?
+                options.dot ?
+                    starDotExtTestNocaseDot
+                    : starDotExtTestNocase
+                : options.dot ? starDotExtTestDot
+                    : starDotExtTest)(m[1]);
+        }
+        else if ((m = pattern.match(qmarksRE))) {
+            fastTest = (options.nocase ?
+                options.dot ?
+                    qmarksTestNocaseDot
+                    : qmarksTestNocase
+                : options.dot ? qmarksTestDot
+                    : qmarksTest)(m);
+        }
+        else if ((m = pattern.match(starDotStarRE))) {
+            fastTest = options.dot ? starDotStarTestDot : starDotStarTest;
+        }
+        else if ((m = pattern.match(dotStarRE))) {
+            fastTest = dotStarTest;
+        }
+        const re = AST.fromGlob(pattern, this.options).toMMPattern();
+        if (fastTest && typeof re === 'object') {
+            // Avoids overriding in frozen environments
+            Reflect.defineProperty(re, 'test', { value: fastTest });
+        }
+        return re;
+    }
+    makeRe() {
+        if (this.regexp || this.regexp === false)
+            return this.regexp;
+        // at this point, this.set is a 2d array of partial
+        // pattern strings, or "**".
+        //
+        // It's better to use .match().  This function shouldn't
+        // be used, really, but it's pretty convenient sometimes,
+        // when you just want to work with a regex.
+        const set = this.set;
+        if (!set.length) {
+            this.regexp = false;
+            return this.regexp;
+        }
+        const options = this.options;
+        const twoStar = options.noglobstar ? esm_star
+            : options.dot ? twoStarDot
+                : twoStarNoDot;
+        const flags = new Set(options.nocase ? ['i'] : []);
+        // regexpify non-globstar patterns
+        // if ** is only item, then we just do one twoStar
+        // if ** is first, and there are more, prepend (\/|twoStar\/)? to next
+        // if ** is last, append (\/twoStar|) to previous
+        // if ** is in the middle, append (\/|\/twoStar\/) to previous
+        // then filter out GLOBSTAR symbols
+        let re = set
+            .map(pattern => {
+            const pp = pattern.map(p => {
+                if (p instanceof RegExp) {
+                    for (const f of p.flags.split(''))
+                        flags.add(f);
+                }
+                return (typeof p === 'string' ? esm_regExpEscape(p)
+                    : p === GLOBSTAR ? GLOBSTAR
+                        : p._src);
+            });
+            pp.forEach((p, i) => {
+                const next = pp[i + 1];
+                const prev = pp[i - 1];
+                if (p !== GLOBSTAR || prev === GLOBSTAR) {
+                    return;
+                }
+                if (prev === undefined) {
+                    if (next !== undefined && next !== GLOBSTAR) {
+                        pp[i + 1] = '(?:\\/|' + twoStar + '\\/)?' + next;
+                    }
+                    else {
+                        pp[i] = twoStar;
+                    }
+                }
+                else if (next === undefined) {
+                    pp[i - 1] = prev + '(?:\\/|\\/' + twoStar + ')?';
+                }
+                else if (next !== GLOBSTAR) {
+                    pp[i - 1] = prev + '(?:\\/|\\/' + twoStar + '\\/)' + next;
+                    pp[i + 1] = GLOBSTAR;
+                }
+            });
+            const filtered = pp.filter(p => p !== GLOBSTAR);
+            // For partial matches, we need to make the pattern match
+            // any prefix of the full path. We do this by generating
+            // alternative patterns that match progressively longer prefixes.
+            if (this.partial && filtered.length >= 1) {
+                const prefixes = [];
+                for (let i = 1; i <= filtered.length; i++) {
+                    prefixes.push(filtered.slice(0, i).join('/'));
+                }
+                return '(?:' + prefixes.join('|') + ')';
+            }
+            return filtered.join('/');
+        })
+            .join('|');
+        // need to wrap in parens if we had more than one thing with |,
+        // otherwise only the first will be anchored to ^ and the last to $
+        const [open, close] = set.length > 1 ? ['(?:', ')'] : ['', ''];
+        // must match entire pattern
+        // ending in a * or ** will make it less strict.
+        re = '^' + open + re + close + '$';
+        // In partial mode, '/' should always match as it's a valid prefix for any pattern
+        if (this.partial) {
+            re = '^(?:\\/|' + open + re.slice(1, -1) + close + ')$';
+        }
+        // can match anything, as long as it's not this.
+        if (this.negate)
+            re = '^(?!' + re + ').+$';
+        try {
+            this.regexp = new RegExp(re, [...flags].join(''));
+            /* c8 ignore start */
+        }
+        catch {
+            // should be impossible
+            this.regexp = false;
+        }
+        /* c8 ignore stop */
+        return this.regexp;
+    }
+    slashSplit(p) {
+        // if p starts with // on windows, we preserve that
+        // so that UNC paths aren't broken.  Otherwise, any number of
+        // / characters are coalesced into one, unless
+        // preserveMultipleSlashes is set to true.
+        if (this.preserveMultipleSlashes) {
+            return p.split('/');
+        }
+        else if (this.isWindows && /^\/\/[^/]+/.test(p)) {
+            // add an extra '' for the one we lose
+            return ['', ...p.split(/\/+/)];
+        }
+        else {
+            return p.split(/\/+/);
+        }
+    }
+    match(f, partial = this.partial) {
+        this.debug('match', f, this.pattern);
+        // short-circuit in the case of busted things.
+        // comments, etc.
+        if (this.comment) {
+            return false;
+        }
+        if (this.empty) {
+            return f === '';
+        }
+        if (f === '/' && partial) {
+            return true;
+        }
+        const options = this.options;
+        // windows: need to use /, not \
+        if (this.isWindows) {
+            f = f.split('\\').join('/');
+        }
+        // treat the test path as a set of pathparts.
+        const ff = this.slashSplit(f);
+        this.debug(this.pattern, 'split', ff);
+        // just ONE of the pattern sets in this.set needs to match
+        // in order for it to be valid.  If negating, then just one
+        // match means that we have failed.
+        // Either way, return on the first hit.
+        const set = this.set;
+        this.debug(this.pattern, 'set', set);
+        // Find the basename of the path by looking for the last non-empty segment
+        let filename = ff[ff.length - 1];
+        if (!filename) {
+            for (let i = ff.length - 2; !filename && i >= 0; i--) {
+                filename = ff[i];
+            }
+        }
+        for (const pattern of set) {
+            let file = ff;
+            if (options.matchBase && pattern.length === 1) {
+                file = [filename];
+            }
+            const hit = this.matchOne(file, pattern, partial);
+            if (hit) {
+                if (options.flipNegate) {
+                    return true;
+                }
+                return !this.negate;
+            }
+        }
+        // didn't get any hits.  this is success if it's a negative
+        // pattern, failure otherwise.
+        if (options.flipNegate) {
+            return false;
+        }
+        return this.negate;
+    }
+    static defaults(def) {
+        return minimatch.defaults(def).Minimatch;
+    }
+}
+/* c8 ignore start */
+
+
+
+/* c8 ignore stop */
+minimatch.AST = AST;
+minimatch.Minimatch = Minimatch;
+minimatch.escape = escape_escape;
+minimatch.unescape = unescape_unescape;
+//# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-path.js
 
 
 
@@ -54828,7 +61157,7 @@ class Path {
             itemPath = safeTrimTrailingSeparator(itemPath);
             // Not rooted
             if (!hasRoot(itemPath)) {
-                this.segments = itemPath.split(external_path_.sep);
+                this.segments = itemPath.split(external_path_namespaceObject.sep);
             }
             // Rooted
             else {
@@ -54837,7 +61166,7 @@ class Path {
                 let dir = dirname(remaining);
                 while (dir !== remaining) {
                     // Add the segment
-                    const basename = external_path_.basename(remaining);
+                    const basename = external_path_namespaceObject.basename(remaining);
                     this.segments.unshift(basename);
                     // Truncate the last segment
                     remaining = dir;
@@ -54867,7 +61196,7 @@ class Path {
                 // All other segments
                 else {
                     // Must not contain slash
-                    external_assert_(!segment.includes(external_path_.sep), `Parameter 'itemPath' contains unexpected path separators`);
+                    external_assert_(!segment.includes(external_path_namespaceObject.sep), `Parameter 'itemPath' contains unexpected path separators`);
                     this.segments.push(segment);
                 }
             }
@@ -54880,13 +61209,13 @@ class Path {
         // First segment
         let result = this.segments[0];
         // All others
-        let skipSlash = result.endsWith(external_path_.sep) || (internal_path_IS_WINDOWS && /^[A-Z]:$/i.test(result));
+        let skipSlash = result.endsWith(external_path_namespaceObject.sep) || (internal_path_IS_WINDOWS && /^[A-Z]:$/i.test(result));
         for (let i = 1; i < this.segments.length; i++) {
             if (skipSlash) {
                 skipSlash = false;
             }
             else {
-                result += external_path_.sep;
+                result += external_path_namespaceObject.sep;
             }
             result += this.segments[i];
         }
@@ -54894,7 +61223,7 @@ class Path {
     }
 }
 //# sourceMappingURL=internal-path.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-pattern.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-pattern.js
 
 
 
@@ -54902,7 +61231,6 @@ class Path {
 
 
 
-const { Minimatch } = minimatch;
 const internal_pattern_IS_WINDOWS = process.platform === 'win32';
 class Pattern {
     constructor(patternOrNegate, isImplicitPattern = false, segments, homedir) {
@@ -54938,7 +61266,7 @@ class Pattern {
         this.segments = new Path(pattern).segments;
         // Trailing slash indicates the pattern should only match directories, not regular files
         this.trailingSeparator = internal_path_helper_normalizeSeparators(pattern)
-            .endsWith(external_path_.sep);
+            .endsWith(external_path_namespaceObject.sep);
         pattern = safeTrimTrailingSeparator(pattern);
         // Search path (literal path prior to the first glob segment)
         let foundGlob = false;
@@ -54972,10 +61300,10 @@ class Pattern {
             // Append a trailing slash. Otherwise Minimatch will not match the directory immediately
             // preceding the globstar. For example, given the pattern `/foo/**`, Minimatch returns
             // false for `/foo` but returns true for `/foo/`. Append a trailing slash to handle that quirk.
-            if (!itemPath.endsWith(external_path_.sep) && this.isImplicitPattern === false) {
+            if (!itemPath.endsWith(external_path_namespaceObject.sep) && this.isImplicitPattern === false) {
                 // Note, this is safe because the constructor ensures the pattern has an absolute root.
                 // For example, formats like C: and C:foo on Windows are resolved to an absolute root.
-                itemPath = `${itemPath}${external_path_.sep}`;
+                itemPath = `${itemPath}${external_path_namespaceObject.sep}`;
             }
         }
         else {
@@ -55024,11 +61352,11 @@ class Pattern {
         // Normalize slashes
         pattern = internal_path_helper_normalizeSeparators(pattern);
         // Replace leading `.` segment
-        if (pattern === '.' || pattern.startsWith(`.${external_path_.sep}`)) {
+        if (pattern === '.' || pattern.startsWith(`.${external_path_namespaceObject.sep}`)) {
             pattern = Pattern.globEscape(process.cwd()) + pattern.substr(1);
         }
         // Replace leading `~` segment
-        else if (pattern === '~' || pattern.startsWith(`~${external_path_.sep}`)) {
+        else if (pattern === '~' || pattern.startsWith(`~${external_path_namespaceObject.sep}`)) {
             homedir = homedir || external_os_.homedir();
             external_assert_(homedir, 'Unable to determine HOME directory');
             external_assert_(hasAbsoluteRoot(homedir), `Expected HOME directory to be a rooted path. Actual '${homedir}'`);
@@ -55124,7 +61452,7 @@ class Pattern {
     }
 }
 //# sourceMappingURL=internal-pattern.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-search-state.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-search-state.js
 class SearchState {
     constructor(path, level) {
         this.path = path;
@@ -55132,7 +61460,7 @@ class SearchState {
     }
 }
 //# sourceMappingURL=internal-search-state.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-globber.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-globber.js
 var internal_globber_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -55255,7 +61583,7 @@ class DefaultGlobber {
                     continue;
                 }
                 // Hidden file or directory?
-                if (options.excludeHiddenFiles && external_path_.basename(item.path).match(/^\./)) {
+                if (options.excludeHiddenFiles && external_path_namespaceObject.basename(item.path).match(/^\./)) {
                     continue;
                 }
                 // Directory
@@ -55270,7 +61598,7 @@ class DefaultGlobber {
                     }
                     // Push the child items in reverse
                     const childLevel = item.level + 1;
-                    const childItems = (yield __await(external_fs_namespaceObject.promises.readdir(item.path))).map(x => new SearchState(external_path_.join(item.path, x), childLevel));
+                    const childItems = (yield __await(external_fs_namespaceObject.promises.readdir(item.path))).map(x => new SearchState(external_path_namespaceObject.join(item.path, x), childLevel));
                     stack.push(...childItems.reverse());
                 }
                 // File
@@ -55356,7 +61684,7 @@ class DefaultGlobber {
 const external_stream_namespaceObject = require("stream");
 // EXTERNAL MODULE: external "util"
 var external_util_ = __nccwpck_require__(9023);
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/internal-hash-files.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/internal-hash-files.js
 var internal_hash_files_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -55433,7 +61761,7 @@ function hashFiles(globber_1, currentWorkspace_1) {
     });
 }
 //# sourceMappingURL=internal-hash-files.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.6.1/node_modules/@actions/glob/lib/glob.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+glob@0.7.0/node_modules/@actions/glob/lib/glob.js
 var glob_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -55477,7 +61805,7 @@ function glob_hashFiles(patterns_1) {
 //# sourceMappingURL=glob.js.map
 // EXTERNAL MODULE: ./node_modules/.pnpm/semver@7.8.5/node_modules/semver/index.js
 var semver = __nccwpck_require__(8113);
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/constants.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/constants.js
 var CacheFilename;
 (function (CacheFilename) {
     CacheFilename["Gzip"] = "cache.tgz";
@@ -55516,7 +61844,7 @@ const CacheFileSizeLimit = 10 * Math.pow(1024, 3); // 10GiB per repository
 // Shared so cache.ts and cacheHttpClient.ts match the same contract value.
 const CacheReadDeniedMessagePrefix = 'cache read denied:';
 //# sourceMappingURL=constants.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/cacheUtils.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/cacheUtils.js
 var cacheUtils_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -55563,9 +61891,9 @@ function createTempDirectory() {
                     baseLocation = '/home';
                 }
             }
-            tempDirectory = external_path_.join(baseLocation, 'actions', 'temp');
+            tempDirectory = external_path_namespaceObject.join(baseLocation, 'actions', 'temp');
         }
-        const dest = external_path_.join(tempDirectory, external_crypto_namespaceObject.randomUUID());
+        const dest = external_path_namespaceObject.join(tempDirectory, external_crypto_namespaceObject.randomUUID());
         yield mkdirP(dest);
         return dest;
     });
@@ -55587,8 +61915,8 @@ function resolvePaths(patterns) {
                 _c = _g.value;
                 _e = false;
                 const file = _c;
-                const relativeFile = external_path_.relative(workspace, file)
-                    .replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/');
+                const relativeFile = external_path_namespaceObject.relative(workspace, file)
+                    .replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/');
                 core_debug(`Matched: ${relativeFile}`);
                 // Paths are made relative so the tar entries are all relative to the root of the workspace.
                 if (relativeFile === '') {
@@ -70626,74 +76954,74 @@ const REDOS_PATTERNS = [
 // Shared suffix: optional closing quote/whitespace before the colon
 // Handles: $op: (bare), "$op": (JSON), '$op': (single-quoted)
 const SEP = /["'\s]*:/;
-const sep = '["\'\\s]*:';
+const nosql_sep = '["\'\\s]*:';
 
 const NOSQL_PATTERNS = [
   // ─── MongoDB $ operator injection ────────────────────────────────────────
   {
     id: 'nosql-where-operator',
     description: '$where — executes arbitrary JavaScript server-side in MongoDB',
-    pattern: new RegExp(`\\$where${sep}`, 'i'),
+    pattern: new RegExp(`\\$where${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-ne-operator',
     description: '$ne — "not equal" operator used to bypass equality checks',
-    pattern: new RegExp(`\\$ne${sep}`, 'i'),
+    pattern: new RegExp(`\\$ne${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-gt-operator',
     description: '$gt — "greater than" used to bypass password/value checks',
-    pattern: new RegExp(`\\$gte?${sep}`, 'i'),
+    pattern: new RegExp(`\\$gte?${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-lt-operator',
     description: '$lt / $lte — "less than" bypass variants',
-    pattern: new RegExp(`\\$lte?${sep}`, 'i'),
+    pattern: new RegExp(`\\$lte?${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-regex-operator',
     description: '$regex — can be used to extract data character by character (blind injection)',
-    pattern: new RegExp(`\\$regex${sep}`, 'i'),
+    pattern: new RegExp(`\\$regex${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-or-operator',
     description: '$or — logical OR; used to create always-true conditions',
-    pattern: new RegExp(`\\$or${sep}\\s*\\[`, 'i'),
+    pattern: new RegExp(`\\$or${nosql_sep}\\s*\\[`, 'i'),
   },
   {
     id: 'nosql-and-operator',
     description: '$and — logical AND operator injection',
-    pattern: new RegExp(`\\$and${sep}\\s*\\[`, 'i'),
+    pattern: new RegExp(`\\$and${nosql_sep}\\s*\\[`, 'i'),
   },
   {
     id: 'nosql-nor-operator',
     description: '$nor — logical NOR operator injection',
-    pattern: new RegExp(`\\$nor${sep}\\s*\\[`, 'i'),
+    pattern: new RegExp(`\\$nor${nosql_sep}\\s*\\[`, 'i'),
   },
   {
     id: 'nosql-exists-operator',
     description: '$exists — can enumerate fields to determine schema',
-    pattern: new RegExp(`\\$exists${sep}`, 'i'),
+    pattern: new RegExp(`\\$exists${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-in-operator',
     description: '$in — matches any value in a list; can enumerate values',
-    pattern: new RegExp(`\\$in${sep}\\s*\\[`, 'i'),
+    pattern: new RegExp(`\\$in${nosql_sep}\\s*\\[`, 'i'),
   },
   {
     id: 'nosql-expr-operator',
     description: '$expr — allows aggregation expressions in queries (MongoDB 3.6+)',
-    pattern: new RegExp(`\\$expr${sep}`, 'i'),
+    pattern: new RegExp(`\\$expr${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-function-operator',
     description: '$function — executes arbitrary JavaScript in MongoDB 4.4+',
-    pattern: new RegExp(`\\$function${sep}`, 'i'),
+    pattern: new RegExp(`\\$function${nosql_sep}`, 'i'),
   },
   {
     id: 'nosql-accumulator-operator',
     description: '$accumulator — custom aggregation with arbitrary JS execution',
-    pattern: new RegExp(`\\$accumulator${sep}`, 'i'),
+    pattern: new RegExp(`\\$accumulator${nosql_sep}`, 'i'),
   },
   // ─── Prototype pollution ─────────────────────────────────────────────────
   {
@@ -72297,7 +78625,7 @@ async function parseXML(str, opts = {}) {
     return parsedXml;
 }
 //# sourceMappingURL=xml.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/log.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/log.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -75677,7 +82005,7 @@ var SMRegion;
     SMRegion[SMRegion["SegmentContent"] = 4] = "SegmentContent";
     SMRegion[SMRegion["Completed"] = 5] = "Completed";
 })(SMRegion || (SMRegion = {}));
-class StructuredMessageEncoding {
+class StructuredMessageEncoding_StructuredMessageEncoding {
     pushData;
     contentLength;
     messageLength;
@@ -75807,7 +82135,7 @@ class StructuredMessageEncoding {
 
 function StructuredMessageEncodingStream_isNodeReadableStream(source) {
     return (source !== null &&
-        source instanceof external_node_stream_ &&
+        source instanceof Stream &&
         typeof source._read === "function" &&
         typeof source._readableState === "object" &&
         typeof source.pipe === "function");
@@ -75848,7 +82176,7 @@ async function structuredMessageEncoding(source, contentLength) {
         };
     }
     if (typeof source === "string") {
-        const s = new external_node_stream_.Readable();
+        const s = new Readable();
         s._read = () => { };
         s.push(source);
         s.push(null);
@@ -75860,7 +82188,7 @@ async function structuredMessageEncoding(source, contentLength) {
         };
     }
     if (source instanceof ArrayBuffer) {
-        const stream = external_node_stream_.Readable.from(Buffer.from(source));
+        const stream = Readable.from(Buffer.from(source));
         const encodingMessage = await new StructuredMessageEncodingStream(stream, contentLength, {});
         return {
             body: encodingMessage,
@@ -75868,7 +82196,7 @@ async function structuredMessageEncoding(source, contentLength) {
         };
     }
     if (source instanceof Buffer) {
-        const stream = external_node_stream_.Readable.from(source);
+        const stream = Readable.from(source);
         const encodingMessage = await new StructuredMessageEncodingStream(stream, contentLength, {});
         return {
             body: encodingMessage,
@@ -75876,7 +82204,7 @@ async function structuredMessageEncoding(source, contentLength) {
         };
     }
     if (ArrayBuffer.isView(source)) {
-        const stream = external_node_stream_.Readable.from(Buffer.from(source.buffer, source.byteOffset, source.byteLength));
+        const stream = Readable.from(Buffer.from(source.buffer, source.byteOffset, source.byteLength));
         const encodingMessage = await new StructuredMessageEncodingStream(stream, contentLength, {});
         return {
             body: encodingMessage,
@@ -75927,7 +82255,7 @@ class StructuredMessageEncodingStream extends external_node_stream_.Readable {
     constructor(source, contentLength, options) {
         super({ highWaterMark: options.highWaterMark });
         this.source = source;
-        this.encodingMethods = new StructuredMessageEncoding((dataToHandle) => {
+        this.encodingMethods = new StructuredMessageEncoding_StructuredMessageEncoding((dataToHandle) => {
             if (!this.push(dataToHandle)) {
                 source.pause();
             }
@@ -78079,11 +84407,11 @@ class UserDelegationKeyCredential {
 // Licensed under the MIT License.
 
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/constants.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/constants.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-const esm_utils_constants_SDK_VERSION = "12.33.0";
-const SERVICE_VERSION = "2026-06-06";
+const esm_utils_constants_SDK_VERSION = "12.31.0";
+const SERVICE_VERSION = "2026-02-06";
 const BLOCK_BLOB_MAX_UPLOAD_BLOB_BYTES = 256 * 1024 * 1024; // 256MB
 const BLOCK_BLOB_MAX_STAGE_BLOCK_BYTES = 4000 * 1024 * 1024; // 4000MB
 const BLOCK_BLOB_MAX_BLOCKS = 50000;
@@ -78306,7 +84634,7 @@ const utils_constants_PathStylePorts = [
     "11104",
 ];
 //# sourceMappingURL=constants.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/Pipeline.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/Pipeline.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -78578,7 +84906,7 @@ function isCoreHttpPolicyFactory(factory) {
     });
 }
 //# sourceMappingURL=Pipeline.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/index.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -78737,8 +85065,8 @@ var KnownStorageErrorCode;
     KnownStorageErrorCode["FeatureVersionMismatch"] = "FeatureVersionMismatch";
     /** IncrementalCopyBlobMismatch */
     KnownStorageErrorCode["IncrementalCopyBlobMismatch"] = "IncrementalCopyBlobMismatch";
-    /** IncrementalCopyOfEarlierSnapshotNotAllowed */
-    KnownStorageErrorCode["IncrementalCopyOfEarlierSnapshotNotAllowed"] = "IncrementalCopyOfEarlierSnapshotNotAllowed";
+    /** IncrementalCopyOfEarlierVersionSnapshotNotAllowed */
+    KnownStorageErrorCode["IncrementalCopyOfEarlierVersionSnapshotNotAllowed"] = "IncrementalCopyOfEarlierVersionSnapshotNotAllowed";
     /** IncrementalCopySourceMustBeSnapshot */
     KnownStorageErrorCode["IncrementalCopySourceMustBeSnapshot"] = "IncrementalCopySourceMustBeSnapshot";
     /** InfiniteLeaseDurationRequired */
@@ -78843,7 +85171,7 @@ var KnownStorageErrorCode;
     KnownStorageErrorCode["BlobAccessTierNotSupportedForAccountType"] = "BlobAccessTierNotSupportedForAccountType";
 })(KnownStorageErrorCode || (KnownStorageErrorCode = {}));
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/mappers.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/mappers.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -79468,13 +85796,6 @@ const KeyInfo = {
                     name: "String",
                 },
             },
-            delegatedUserTid: {
-                serializedName: "DelegatedUserTid",
-                xmlName: "DelegatedUserTid",
-                type: {
-                    name: "String",
-                },
-            },
         },
     },
 };
@@ -79528,13 +85849,6 @@ const UserDelegationKey = {
                 serializedName: "SignedVersion",
                 required: true,
                 xmlName: "SignedVersion",
-                type: {
-                    name: "String",
-                },
-            },
-            signedDelegatedUserTenantId: {
-                serializedName: "SignedDelegatedUserTid",
-                xmlName: "SignedDelegatedUserTid",
                 type: {
                     name: "String",
                 },
@@ -80166,7 +86480,6 @@ const BlobPropertiesInternal = {
                         "Cool",
                         "Archive",
                         "Cold",
-                        "Smart",
                     ],
                 },
             },
@@ -80186,32 +86499,6 @@ const BlobPropertiesInternal = {
                         "rehydrate-pending-to-hot",
                         "rehydrate-pending-to-cool",
                         "rehydrate-pending-to-cold",
-                        "rehydrate-pending-to-smart",
-                    ],
-                },
-            },
-            smartAccessTier: {
-                serializedName: "SmartAccessTier",
-                xmlName: "SmartAccessTier",
-                type: {
-                    name: "Enum",
-                    allowedValues: [
-                        "P4",
-                        "P6",
-                        "P10",
-                        "P15",
-                        "P20",
-                        "P30",
-                        "P40",
-                        "P50",
-                        "P60",
-                        "P70",
-                        "P80",
-                        "Hot",
-                        "Cool",
-                        "Archive",
-                        "Cold",
-                        "Smart",
                     ],
                 },
             },
@@ -81193,9 +87480,6 @@ const ServiceGetAccountInfoHeaders = {
                         "Standard_RAGRS",
                         "Standard_ZRS",
                         "Premium_LRS",
-                        "Standard_GZRS",
-                        "Premium_ZRS",
-                        "Standard_RAGZRS",
                     ],
                 },
             },
@@ -82647,9 +88931,6 @@ const ContainerGetAccountInfoHeaders = {
                         "Standard_RAGRS",
                         "Standard_ZRS",
                         "Premium_LRS",
-                        "Standard_GZRS",
-                        "Premium_ZRS",
-                        "Standard_RAGZRS",
                     ],
                 },
             },
@@ -83016,20 +89297,6 @@ const BlobDownloadHeaders = {
                     name: "Boolean",
                 },
             },
-            structuredBodyType: {
-                serializedName: "x-ms-structured-body",
-                xmlName: "x-ms-structured-body",
-                type: {
-                    name: "String",
-                },
-            },
-            structuredContentLength: {
-                serializedName: "x-ms-structured-content-length",
-                xmlName: "x-ms-structured-content-length",
-                type: {
-                    name: "Number",
-                },
-            },
             errorCode: {
                 serializedName: "x-ms-error-code",
                 xmlName: "x-ms-error-code",
@@ -83355,13 +89622,6 @@ const BlobGetPropertiesHeaders = {
                 xmlName: "x-ms-access-tier-change-time",
                 type: {
                     name: "DateTimeRfc1123",
-                },
-            },
-            smartAccessTier: {
-                serializedName: "x-ms-smart-access-tier",
-                xmlName: "x-ms-smart-access-tier",
-                type: {
-                    name: "String",
                 },
             },
             versionId: {
@@ -84870,9 +91130,6 @@ const BlobGetAccountInfoHeaders = {
                         "Standard_RAGRS",
                         "Standard_ZRS",
                         "Premium_LRS",
-                        "Standard_GZRS",
-                        "Premium_ZRS",
-                        "Standard_RAGZRS",
                     ],
                 },
             },
@@ -85507,13 +91764,6 @@ const PageBlobUploadPagesHeaders = {
             encryptionScope: {
                 serializedName: "x-ms-encryption-scope",
                 xmlName: "x-ms-encryption-scope",
-                type: {
-                    name: "String",
-                },
-            },
-            structuredBodyType: {
-                serializedName: "x-ms-structured-body",
-                xmlName: "x-ms-structured-body",
                 type: {
                     name: "String",
                 },
@@ -86381,13 +92631,6 @@ const AppendBlobAppendBlockHeaders = {
                     name: "String",
                 },
             },
-            structuredBodyType: {
-                serializedName: "x-ms-structured-body",
-                xmlName: "x-ms-structured-body",
-                type: {
-                    name: "String",
-                },
-            },
             errorCode: {
                 serializedName: "x-ms-error-code",
                 xmlName: "x-ms-error-code",
@@ -86701,13 +92944,6 @@ const BlockBlobUploadHeaders = {
                     name: "String",
                 },
             },
-            structuredBodyType: {
-                serializedName: "x-ms-structured-body",
-                xmlName: "x-ms-structured-body",
-                type: {
-                    name: "String",
-                },
-            },
             errorCode: {
                 serializedName: "x-ms-error-code",
                 xmlName: "x-ms-error-code",
@@ -86922,13 +93158,6 @@ const BlockBlobStageBlockHeaders = {
             encryptionScope: {
                 serializedName: "x-ms-encryption-scope",
                 xmlName: "x-ms-encryption-scope",
-                type: {
-                    name: "String",
-                },
-            },
-            structuredBodyType: {
-                serializedName: "x-ms-structured-body",
-                xmlName: "x-ms-structured-body",
                 type: {
                     name: "String",
                 },
@@ -87273,7 +93502,7 @@ const BlockBlobGetBlockListExceptionHeaders = {
     },
 };
 //# sourceMappingURL=mappers.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/parameters.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/models/parameters.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -87358,7 +93587,7 @@ const timeoutInSeconds = {
 const version = {
     parameterPath: "version",
     mapper: {
-        defaultValue: "2026-06-06",
+        defaultValue: "2026-02-06",
         isConstant: true,
         serializedName: "x-ms-version",
         type: {
@@ -87934,7 +94163,7 @@ const versionId = {
         },
     },
 };
-const range = {
+const parameters_range = {
     parameterPath: ["options", "range"],
     mapper: {
         serializedName: "x-ms-range",
@@ -87961,16 +94190,6 @@ const rangeGetContentCRC64 = {
         xmlName: "x-ms-range-get-content-crc64",
         type: {
             name: "Boolean",
-        },
-    },
-};
-const structuredBodyType = {
-    parameterPath: ["options", "structuredBodyType"],
-    mapper: {
-        serializedName: "x-ms-structured-body",
-        xmlName: "x-ms-structured-body",
-        type: {
-            name: "String",
         },
     },
 };
@@ -88052,26 +94271,6 @@ const blobDeleteType = {
         xmlName: "deletetype",
         type: {
             name: "String",
-        },
-    },
-};
-const accessTierIfModifiedSince = {
-    parameterPath: ["options", "accessTierIfModifiedSince"],
-    mapper: {
-        serializedName: "x-ms-access-tier-if-modified-since",
-        xmlName: "x-ms-access-tier-if-modified-since",
-        type: {
-            name: "DateTimeRfc1123",
-        },
-    },
-};
-const accessTierIfUnmodifiedSince = {
-    parameterPath: ["options", "accessTierIfUnmodifiedSince"],
-    mapper: {
-        serializedName: "x-ms-access-tier-if-unmodified-since",
-        xmlName: "x-ms-access-tier-if-unmodified-since",
-        type: {
-            name: "DateTimeRfc1123",
         },
     },
 };
@@ -88265,7 +94464,6 @@ const tier = {
                 "Cool",
                 "Archive",
                 "Cold",
-                "Smart",
             ],
         },
     },
@@ -88504,7 +94702,6 @@ const tier1 = {
                 "Cool",
                 "Archive",
                 "Cold",
-                "Smart",
             ],
         },
     },
@@ -88733,16 +94930,6 @@ const ifSequenceNumberEqualTo = {
         },
     },
 };
-const structuredContentLength = {
-    parameterPath: ["options", "structuredContentLength"],
-    mapper: {
-        serializedName: "x-ms-structured-content-length",
-        xmlName: "x-ms-structured-content-length",
-        type: {
-            name: "Number",
-        },
-    },
-};
 const pageWrite1 = {
     parameterPath: "pageWrite",
     mapper: {
@@ -88792,36 +94979,6 @@ const range1 = {
         serializedName: "x-ms-range",
         required: true,
         xmlName: "x-ms-range",
-        type: {
-            name: "String",
-        },
-    },
-};
-const sourceEncryptionKey = {
-    parameterPath: ["options", "sourceCpkInfo", "sourceEncryptionKey"],
-    mapper: {
-        serializedName: "x-ms-source-encryption-key",
-        xmlName: "x-ms-source-encryption-key",
-        type: {
-            name: "String",
-        },
-    },
-};
-const sourceEncryptionKeySha256 = {
-    parameterPath: ["options", "sourceCpkInfo", "sourceEncryptionKeySha256"],
-    mapper: {
-        serializedName: "x-ms-source-encryption-key-sha256",
-        xmlName: "x-ms-source-encryption-key-sha256",
-        type: {
-            name: "String",
-        },
-    },
-};
-const sourceEncryptionAlgorithm = {
-    parameterPath: ["options", "sourceCpkInfo", "sourceEncryptionAlgorithm"],
-    mapper: {
-        serializedName: "x-ms-source-encryption-algorithm",
-        xmlName: "x-ms-source-encryption-algorithm",
         type: {
             name: "String",
         },
@@ -89020,7 +95177,7 @@ const listType = {
     },
 };
 //# sourceMappingURL=parameters.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/service.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/service.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -89345,7 +95502,7 @@ const filterBlobsOperationSpec = {
     serializer: xmlSerializer,
 };
 //# sourceMappingURL=service.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/container.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/container.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -90062,7 +96219,7 @@ const container_getAccountInfoOperationSpec = {
     serializer: container_xmlSerializer,
 };
 //# sourceMappingURL=container.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/blob.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/blob.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -90335,10 +96492,9 @@ const downloadOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        range,
+        parameters_range,
         rangeGetContentMD5,
         rangeGetContentCRC64,
-        structuredBodyType,
         encryptionKey,
         encryptionKeySha256,
         encryptionAlgorithm,
@@ -90414,8 +96570,6 @@ const blob_deleteOperationSpec = {
         ifNoneMatch,
         ifTags,
         deleteSnapshots,
-        accessTierIfModifiedSince,
-        accessTierIfUnmodifiedSince,
     ],
     isXML: true,
     serializer: blob_xmlSerializer,
@@ -91096,7 +97250,7 @@ const setTagsOperationSpec = {
     serializer: blob_xmlSerializer,
 };
 //# sourceMappingURL=blob.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/pageBlob.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/pageBlob.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -91281,8 +97435,7 @@ const uploadPagesOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        range,
-        structuredBodyType,
+        parameters_range,
         encryptionKey,
         encryptionKeySha256,
         encryptionAlgorithm,
@@ -91298,7 +97451,6 @@ const uploadPagesOperationSpec = {
         ifSequenceNumberLessThanOrEqualTo,
         ifSequenceNumberLessThan,
         ifSequenceNumberEqualTo,
-        structuredContentLength,
     ],
     isXML: true,
     contentType: "application/xml; charset=utf-8",
@@ -91327,7 +97479,7 @@ const clearPagesOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        range,
+        parameters_range,
         encryptionKey,
         encryptionKeySha256,
         encryptionAlgorithm,
@@ -91387,9 +97539,6 @@ const uploadPagesFromURLOperationSpec = {
         sourceRange,
         sourceContentCrc64,
         range1,
-        sourceEncryptionKey,
-        sourceEncryptionKeySha256,
-        sourceEncryptionAlgorithm,
     ],
     isXML: true,
     serializer: pageBlob_xmlSerializer,
@@ -91422,7 +97571,7 @@ const getPageRangesOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        range,
+        parameters_range,
         ifMatch,
         ifNoneMatch,
         ifTags,
@@ -91459,7 +97608,7 @@ const getPageRangesDiffOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        range,
+        parameters_range,
         ifMatch,
         ifNoneMatch,
         ifTags,
@@ -91560,7 +97709,7 @@ const copyIncrementalOperationSpec = {
     serializer: pageBlob_xmlSerializer,
 };
 //# sourceMappingURL=pageBlob.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/appendBlob.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/appendBlob.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -91690,7 +97839,6 @@ const appendBlockOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        structuredBodyType,
         encryptionKey,
         encryptionKeySha256,
         encryptionAlgorithm,
@@ -91702,7 +97850,6 @@ const appendBlockOperationSpec = {
         transactionalContentCrc64,
         contentType1,
         accept2,
-        structuredContentLength,
         maxSize,
         appendPosition,
     ],
@@ -91750,9 +97897,6 @@ const appendBlockFromUrlOperationSpec = {
         transactionalContentMD5,
         sourceUrl,
         sourceContentCrc64,
-        sourceEncryptionKey,
-        sourceEncryptionKeySha256,
-        sourceEncryptionAlgorithm,
         maxSize,
         appendPosition,
         sourceRange1,
@@ -91789,7 +97933,7 @@ const sealOperationSpec = {
     serializer: appendBlob_xmlSerializer,
 };
 //# sourceMappingURL=appendBlob.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/blockBlob.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/blockBlob.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -91913,7 +98057,6 @@ const uploadOperationSpec = {
         leaseId,
         ifModifiedSince,
         ifUnmodifiedSince,
-        structuredBodyType,
         encryptionKey,
         encryptionKeySha256,
         encryptionAlgorithm,
@@ -91936,7 +98079,6 @@ const uploadOperationSpec = {
         transactionalContentCrc64,
         contentType1,
         accept2,
-        structuredContentLength,
         blobType2,
     ],
     isXML: true,
@@ -91993,9 +98135,6 @@ const putBlobFromUrlOperationSpec = {
         copySourceTags,
         fileRequestIntent,
         transactionalContentMD5,
-        sourceEncryptionKey,
-        sourceEncryptionKeySha256,
-        sourceEncryptionAlgorithm,
         blobType2,
         copySourceBlobProperties,
     ],
@@ -92026,7 +98165,6 @@ const stageBlockOperationSpec = {
         requestId,
         contentLength,
         leaseId,
-        structuredBodyType,
         encryptionKey,
         encryptionKeySha256,
         encryptionAlgorithm,
@@ -92035,7 +98173,6 @@ const stageBlockOperationSpec = {
         transactionalContentCrc64,
         contentType1,
         accept2,
-        structuredContentLength,
     ],
     isXML: true,
     contentType: "application/xml; charset=utf-8",
@@ -92079,9 +98216,6 @@ const stageBlockFromURLOperationSpec = {
         fileRequestIntent,
         sourceUrl,
         sourceContentCrc64,
-        sourceEncryptionKey,
-        sourceEncryptionKeySha256,
-        sourceEncryptionAlgorithm,
         sourceRange1,
     ],
     isXML: true,
@@ -92168,7 +98302,7 @@ const getBlockListOperationSpec = {
     serializer: blockBlob_xmlSerializer,
 };
 //# sourceMappingURL=blockBlob.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/operations/index.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -92183,7 +98317,7 @@ const getBlockListOperationSpec = {
 
 
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/storageClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/storageClient.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -92213,7 +98347,7 @@ class StorageClient extends ExtendedServiceClient {
         const defaults = {
             requestContentType: "application/json; charset=utf-8",
         };
-        const packageDetails = `azsdk-js-azure-storage-blob/12.33.0`;
+        const packageDetails = `azsdk-js-azure-storage-blob/12.30.0`;
         const userAgentPrefix = options.userAgentOptions && options.userAgentOptions.userAgentPrefix
             ? `${options.userAgentOptions.userAgentPrefix} ${packageDetails}`
             : `${packageDetails}`;
@@ -92229,7 +98363,7 @@ class StorageClient extends ExtendedServiceClient {
         // Parameter assignments
         this.url = url;
         // Assigning values to Constant parameters
-        this.version = options.version || "2026-06-06";
+        this.version = options.version || "2026-02-06";
         this.service = new ServiceImpl(this);
         this.container = new ContainerImpl(this);
         this.blob = new BlobImpl(this);
@@ -92245,7 +98379,7 @@ class StorageClient extends ExtendedServiceClient {
     blockBlob;
 }
 //# sourceMappingURL=storageClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generated/src/index.js
 /*
  * Copyright (c) Microsoft Corporation.
  * Licensed under the MIT License.
@@ -92257,7 +98391,7 @@ class StorageClient extends ExtendedServiceClient {
 
 
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/StorageContextClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/StorageContextClient.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -92275,20 +98409,12 @@ class StorageContextClient extends StorageClient {
     }
 }
 //# sourceMappingURL=StorageContextClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/utils.common.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/utils.common.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 
 
-
-const accountNameSuffixes = [
-    "-secondary-ipv6",
-    "-secondary-dualstack",
-    "-ipv6",
-    "-dualstack",
-    "-secondary",
-];
 /**
  * Reserved URL characters must be properly escaped for Storage services like Blob or File.
  *
@@ -92765,15 +98891,7 @@ function utils_common_getAccountNameFromUrl(url) {
     try {
         if (parsedUrl.hostname.split(".")[1] === "blob") {
             // `${defaultEndpointsProtocol}://${accountName}.blob.${endpointSuffix}`;
-            // `${defaultEndpointsProtocol}://${accountName}-suffix.blob.${endpointSuffix}`;
             accountName = parsedUrl.hostname.split(".")[0];
-            for (let i = 0; i < accountNameSuffixes.length; ++i) {
-                const suffix = accountNameSuffixes[i];
-                if (accountName.endsWith(suffix)) {
-                    accountName = accountName.substring(0, accountName.length - suffix.length);
-                    break;
-                }
-            }
         }
         else if (utils_common_isIpEndpointStyle(parsedUrl)) {
             // IPv4/IPv6 address hosts... Example - http://192.0.0.10:10001/devstoreaccount1/
@@ -93060,33 +99178,8 @@ function utils_common_assertResponse(response) {
     }
     throw new TypeError(`Unexpected response object ${response}`);
 }
-async function setUploadChecksumParameters(body, contentLength, parameters, uploadOptions, configContentChecksumAlgorithm) {
-    let contentChecksumAlgorithm = uploadOptions.contentChecksumAlgorithm ?? configContentChecksumAlgorithm;
-    if (contentChecksumAlgorithm === undefined) {
-        contentChecksumAlgorithm = "Customized";
-    }
-    if (contentChecksumAlgorithm === "Auto") {
-        contentChecksumAlgorithm = "StorageCrc64";
-    }
-    let bodyInfo = undefined;
-    if (contentChecksumAlgorithm === "Customized") {
-        parameters.transactionalContentMD5 = uploadOptions.transactionalContentMD5;
-        parameters.transactionalContentCrc64 = uploadOptions.transactionalContentCrc64;
-    }
-    else if (contentChecksumAlgorithm === "StorageCrc64") {
-        await StorageCRC64Calculator.init();
-        bodyInfo = await structuredMessageEncoding(body, contentLength);
-        parameters.structuredBodyType = "XSM/1.0; properties=crc64";
-        parameters.structuredContentLength = contentLength;
-    }
-    return {
-        body: contentChecksumAlgorithm === "StorageCrc64" ? bodyInfo.body : body,
-        contentLength: contentChecksumAlgorithm === "StorageCrc64" ? bodyInfo.encodedContentLength : contentLength,
-        contentChecksumAlgorithm: contentChecksumAlgorithm,
-    };
-}
 //# sourceMappingURL=utils.common.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/StorageClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/StorageClient.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -93139,7 +99232,7 @@ class StorageClient_StorageClient {
     }
 }
 //# sourceMappingURL=StorageClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/tracing.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/tracing.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -93154,7 +99247,7 @@ const tracingClient = createTracingClient({
     namespace: "Microsoft.Storage",
 });
 //# sourceMappingURL=tracing.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/BlobSASPermissions.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/BlobSASPermissions.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -93348,7 +99441,7 @@ class BlobSASPermissions {
     }
 }
 //# sourceMappingURL=BlobSASPermissions.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/ContainerSASPermissions.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/ContainerSASPermissions.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -93568,7 +99661,7 @@ class ContainerSASPermissions {
     }
 }
 //# sourceMappingURL=ContainerSASPermissions.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/SasIPRange.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/SasIPRange.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -93582,7 +99675,7 @@ function ipRangeToString(ipRange) {
     return ipRange.end ? `${ipRange.start}-${ipRange.end}` : ipRange.start;
 }
 //# sourceMappingURL=SasIPRange.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/SASQueryParameters.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/SASQueryParameters.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -93723,11 +99816,6 @@ class SASQueryParameters {
      */
     signedVersion;
     /**
-     * The delegated user tenant id in Azure AD.
-     * Property of user delegation key.
-     */
-    signedDelegatedUserTid;
-    /**
      * Authorized AAD Object ID in GUID format. The AAD Object ID of a user authorized by the owner of the User Delegation Key
      * to perform the action granted by the SAS. The Azure Storage service will ensure that the owner of the user delegation key
      * has the required permissions before granting access but no additional permission check for the user specified in
@@ -93739,18 +99827,6 @@ class SASQueryParameters {
      * This is only used for User Delegation SAS.
      */
     correlationId;
-    /**
-     * Keys for request headers required in the SAS token
-     */
-    requestHeaderKeys;
-    /**
-     * Keys for request query parameters required in the SAS token
-     */
-    requestQueryParameterKeys;
-    /** To indicate the depth of the virtual blob directory specified
-     * in the canonicalizedresource field of the string-to-sign.
-     */
-    directoryDepth;
     /**
      * Optional. IP range allowed for this SAS.
      *
@@ -93765,7 +99841,7 @@ class SASQueryParameters {
         }
         return undefined;
     }
-    constructor(version, signature, permissionsOrOptions, services, resourceTypes, protocol, startsOn, expiresOn, ipRange, identifier, resource, cacheControl, contentDisposition, contentEncoding, contentLanguage, contentType, userDelegationKey, preauthorizedAgentObjectId, correlationId, encryptionScope, delegatedUserObjectId, requestHeaderKeys, requestQueryParameterKeys, directoryDepth) {
+    constructor(version, signature, permissionsOrOptions, services, resourceTypes, protocol, startsOn, expiresOn, ipRange, identifier, resource, cacheControl, contentDisposition, contentEncoding, contentLanguage, contentType, userDelegationKey, preauthorizedAgentObjectId, correlationId, encryptionScope, delegatedUserObjectId) {
         this.version = version;
         this.signature = signature;
         if (permissionsOrOptions !== undefined && typeof permissionsOrOptions !== "string") {
@@ -93786,9 +99862,6 @@ class SASQueryParameters {
             this.contentEncoding = permissionsOrOptions.contentEncoding;
             this.contentLanguage = permissionsOrOptions.contentLanguage;
             this.contentType = permissionsOrOptions.contentType;
-            this.requestHeaderKeys = permissionsOrOptions.requestHeaderKeys;
-            this.requestQueryParameterKeys = permissionsOrOptions.requestQueryParameterKeys;
-            this.directoryDepth = permissionsOrOptions.directoryDepth;
             if (permissionsOrOptions.userDelegationKey) {
                 this.signedOid = permissionsOrOptions.userDelegationKey.signedObjectId;
                 this.signedTenantId = permissionsOrOptions.userDelegationKey.signedTenantId;
@@ -93796,8 +99869,6 @@ class SASQueryParameters {
                 this.signedExpiresOn = permissionsOrOptions.userDelegationKey.signedExpiresOn;
                 this.signedService = permissionsOrOptions.userDelegationKey.signedService;
                 this.signedVersion = permissionsOrOptions.userDelegationKey.signedVersion;
-                this.signedDelegatedUserTid =
-                    permissionsOrOptions.userDelegationKey.signedDelegatedUserTenantId;
                 this.preauthorizedAgentObjectId = permissionsOrOptions.preauthorizedAgentObjectId;
                 this.correlationId = permissionsOrOptions.correlationId;
             }
@@ -93819,9 +99890,6 @@ class SASQueryParameters {
             this.contentEncoding = contentEncoding;
             this.contentLanguage = contentLanguage;
             this.contentType = contentType;
-            this.requestHeaderKeys = requestHeaderKeys;
-            this.requestQueryParameterKeys = requestQueryParameterKeys;
-            this.directoryDepth = directoryDepth;
             if (userDelegationKey) {
                 this.signedOid = userDelegationKey.signedObjectId;
                 this.signedTenantId = userDelegationKey.signedTenantId;
@@ -93829,7 +99897,6 @@ class SASQueryParameters {
                 this.signedExpiresOn = userDelegationKey.signedExpiresOn;
                 this.signedService = userDelegationKey.signedService;
                 this.signedVersion = userDelegationKey.signedVersion;
-                this.signedDelegatedUserTid = userDelegationKey.signedDelegatedUserTenantId;
                 this.preauthorizedAgentObjectId = preauthorizedAgentObjectId;
                 this.correlationId = correlationId;
             }
@@ -93858,6 +99925,7 @@ class SASQueryParameters {
             "skv", // Signed key version
             "sr",
             "sp",
+            "sig",
             "rscc",
             "rscd",
             "rsce",
@@ -93865,12 +99933,7 @@ class SASQueryParameters {
             "rsct",
             "saoid",
             "scid",
-            "sdd",
             "sduoid", // Signed key user delegation object ID
-            "skdutid", // Signed key user delegation tenant ID
-            "srh", // Request Headers
-            "srq", // Request QueryParameters
-            "sig",
         ];
         const queries = [];
         for (const param of params) {
@@ -93920,9 +99983,6 @@ class SASQueryParameters {
                 case "skv": // Signed key version
                     this.tryAppendQueryParameter(queries, param, this.signedVersion);
                     break;
-                case "skdutid":
-                    this.tryAppendQueryParameter(queries, param, this.signedDelegatedUserTid);
-                    break;
                 case "sr":
                     this.tryAppendQueryParameter(queries, param, this.resource);
                     break;
@@ -93956,15 +100016,6 @@ class SASQueryParameters {
                 case "sduoid":
                     this.tryAppendQueryParameter(queries, param, this.delegatedUserObjectId);
                     break;
-                case "srh": // Request headers
-                    this.tryAppendQueryParameter(queries, param, this.requestHeaderKeys);
-                    break;
-                case "srq": // Request headers
-                    this.tryAppendQueryParameter(queries, param, this.requestQueryParameterKeys);
-                    break;
-                case "sdd": // Directory depth
-                    this.tryAppendQueryParameter(queries, param, this.directoryDepth !== undefined ? this.directoryDepth.toString() : "");
-                    break;
             }
         }
         return queries.join("&");
@@ -93988,7 +100039,7 @@ class SASQueryParameters {
     }
 }
 //# sourceMappingURL=SASQueryParameters.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/BlobSASSignatureValues.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/BlobSASSignatureValues.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -94020,10 +100071,7 @@ function generateBlobSASQueryParametersInternal(blobSASSignatureValues, sharedKe
             return generateBlobSASQueryParameters20201206(blobSASSignatureValues, sharedKeyCredential);
         }
         else {
-            if (version >= "2026-04-06") {
-                return generateBlobSASQueryParametersUDK20260406(blobSASSignatureValues, userDelegationKeyCredential);
-            }
-            else if (version >= "2025-07-05") {
+            if (version >= "2025-07-05") {
                 return generateBlobSASQueryParametersUDK20250705(blobSASSignatureValues, userDelegationKeyCredential);
             }
             else {
@@ -94036,13 +100084,7 @@ function generateBlobSASQueryParametersInternal(blobSASSignatureValues, sharedKe
     // https://learn.microsoft.com/rest/api/storageservices/constructing-a-service-sas#constructing-the-signature-string
     if (version >= "2018-11-09") {
         if (sharedKeyCredential !== undefined) {
-            // Version 2020-02-10 delegation SAS signature construction supports blob name as a virtual directory.
-            if (version >= "2020-02-10") {
-                return generateBlobSASQueryParameters20200210(blobSASSignatureValues, sharedKeyCredential);
-            }
-            else {
-                return generateBlobSASQueryParameters20181109(blobSASSignatureValues, sharedKeyCredential);
-            }
+            return generateBlobSASQueryParameters20181109(blobSASSignatureValues, sharedKeyCredential);
         }
         else {
             // Version 2020-02-10 delegation SAS signature construction includes preauthorizedAgentObjectId, agentObjectId, correlationId.
@@ -94200,85 +100242,6 @@ function generateBlobSASQueryParameters20181109(blobSASSignatureValues, sharedKe
 }
 /**
  * ONLY AVAILABLE IN NODE.JS RUNTIME.
- * IMPLEMENTATION FOR API VERSION FROM 2020-02-10.
- *
- * Creates an instance of SASQueryParameters.
- *
- * Only accepts required settings needed to create a SAS. For optional settings please
- * set corresponding properties directly, such as permissions, startsOn and identifier.
- *
- * WARNING: When identifier is not provided, permissions and expiresOn are required.
- * You MUST assign value to identifier or expiresOn & permissions manually if you initial with
- * this constructor.
- *
- * @param blobSASSignatureValues -
- * @param sharedKeyCredential -
- */
-function generateBlobSASQueryParameters20200210(blobSASSignatureValues, sharedKeyCredential) {
-    blobSASSignatureValues = SASSignatureValuesSanityCheckAndAutofill(blobSASSignatureValues);
-    if (!blobSASSignatureValues.identifier &&
-        !(blobSASSignatureValues.permissions && blobSASSignatureValues.expiresOn)) {
-        throw new RangeError("Must provide 'permissions' and 'expiresOn' for Blob SAS generation when 'identifier' is not provided.");
-    }
-    let resource = "c";
-    let timestamp = blobSASSignatureValues.snapshotTime;
-    let directoryDepth = undefined;
-    if (blobSASSignatureValues.blobName) {
-        if (blobSASSignatureValues.isDirectory === true) {
-            resource = "d";
-            directoryDepth = trimBlobName(blobSASSignatureValues.blobName).split("/").length;
-        }
-        else {
-            resource = "b";
-            if (blobSASSignatureValues.snapshotTime) {
-                resource = "bs";
-            }
-            else if (blobSASSignatureValues.versionId) {
-                resource = "bv";
-                timestamp = blobSASSignatureValues.versionId;
-            }
-        }
-    }
-    // Calling parse and toString guarantees the proper ordering and throws on invalid characters.
-    let verifiedPermissions;
-    if (blobSASSignatureValues.permissions) {
-        if (blobSASSignatureValues.blobName) {
-            verifiedPermissions = BlobSASPermissions.parse(blobSASSignatureValues.permissions.toString()).toString();
-        }
-        else {
-            verifiedPermissions = ContainerSASPermissions.parse(blobSASSignatureValues.permissions.toString()).toString();
-        }
-    }
-    // Signature is generated on the un-url-encoded values.
-    const stringToSign = [
-        verifiedPermissions ? verifiedPermissions : "",
-        blobSASSignatureValues.startsOn
-            ? utils_common_truncatedISO8061Date(blobSASSignatureValues.startsOn, false)
-            : "",
-        blobSASSignatureValues.expiresOn
-            ? utils_common_truncatedISO8061Date(blobSASSignatureValues.expiresOn, false)
-            : "",
-        getCanonicalName(sharedKeyCredential.accountName, blobSASSignatureValues.containerName, blobSASSignatureValues.blobName),
-        blobSASSignatureValues.identifier,
-        blobSASSignatureValues.ipRange ? ipRangeToString(blobSASSignatureValues.ipRange) : "",
-        blobSASSignatureValues.protocol ? blobSASSignatureValues.protocol : "",
-        blobSASSignatureValues.version,
-        resource,
-        timestamp,
-        blobSASSignatureValues.cacheControl ? blobSASSignatureValues.cacheControl : "",
-        blobSASSignatureValues.contentDisposition ? blobSASSignatureValues.contentDisposition : "",
-        blobSASSignatureValues.contentEncoding ? blobSASSignatureValues.contentEncoding : "",
-        blobSASSignatureValues.contentLanguage ? blobSASSignatureValues.contentLanguage : "",
-        blobSASSignatureValues.contentType ? blobSASSignatureValues.contentType : "",
-    ].join("\n");
-    const signature = sharedKeyCredential.computeHMACSHA256(stringToSign);
-    return {
-        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, undefined, undefined, undefined, undefined, undefined, undefined, undefined, directoryDepth),
-        stringToSign: stringToSign,
-    };
-}
-/**
- * ONLY AVAILABLE IN NODE.JS RUNTIME.
  * IMPLEMENTATION FOR API VERSION FROM 2020-12-06.
  *
  * Creates an instance of SASQueryParameters.
@@ -94301,21 +100264,14 @@ function generateBlobSASQueryParameters20201206(blobSASSignatureValues, sharedKe
     }
     let resource = "c";
     let timestamp = blobSASSignatureValues.snapshotTime;
-    let directoryDepth = undefined;
     if (blobSASSignatureValues.blobName) {
-        if (blobSASSignatureValues.isDirectory === true) {
-            resource = "d";
-            directoryDepth = trimBlobName(blobSASSignatureValues.blobName).split("/").length;
+        resource = "b";
+        if (blobSASSignatureValues.snapshotTime) {
+            resource = "bs";
         }
-        else {
-            resource = "b";
-            if (blobSASSignatureValues.snapshotTime) {
-                resource = "bs";
-            }
-            else if (blobSASSignatureValues.versionId) {
-                resource = "bv";
-                timestamp = blobSASSignatureValues.versionId;
-            }
+        else if (blobSASSignatureValues.versionId) {
+            resource = "bv";
+            timestamp = blobSASSignatureValues.versionId;
         }
     }
     // Calling parse and toString guarantees the proper ordering and throws on invalid characters.
@@ -94353,7 +100309,7 @@ function generateBlobSASQueryParameters20201206(blobSASSignatureValues, sharedKe
     ].join("\n");
     const signature = sharedKeyCredential.computeHMACSHA256(stringToSign);
     return {
-        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, undefined, undefined, undefined, blobSASSignatureValues.encryptionScope, undefined, undefined, undefined, directoryDepth),
+        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, undefined, undefined, undefined, blobSASSignatureValues.encryptionScope),
         stringToSign: stringToSign,
     };
 }
@@ -94458,21 +100414,14 @@ function generateBlobSASQueryParametersUDK20200210(blobSASSignatureValues, userD
     }
     let resource = "c";
     let timestamp = blobSASSignatureValues.snapshotTime;
-    let directoryDepth = undefined;
     if (blobSASSignatureValues.blobName) {
-        if (blobSASSignatureValues.isDirectory === true) {
-            resource = "d";
-            directoryDepth = trimBlobName(blobSASSignatureValues.blobName).split("/").length;
+        resource = "b";
+        if (blobSASSignatureValues.snapshotTime) {
+            resource = "bs";
         }
-        else {
-            resource = "b";
-            if (blobSASSignatureValues.snapshotTime) {
-                resource = "bs";
-            }
-            else if (blobSASSignatureValues.versionId) {
-                resource = "bv";
-                timestamp = blobSASSignatureValues.versionId;
-            }
+        else if (blobSASSignatureValues.versionId) {
+            resource = "bv";
+            timestamp = blobSASSignatureValues.versionId;
         }
     }
     // Calling parse and toString guarantees the proper ordering and throws on invalid characters.
@@ -94521,7 +100470,7 @@ function generateBlobSASQueryParametersUDK20200210(blobSASSignatureValues, userD
     ].join("\n");
     const signature = userDelegationKeyCredential.computeHMACSHA256(stringToSign);
     return {
-        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId, undefined, undefined, undefined, undefined, directoryDepth),
+        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId),
         stringToSign: stringToSign,
     };
 }
@@ -94547,21 +100496,14 @@ function generateBlobSASQueryParametersUDK20201206(blobSASSignatureValues, userD
     }
     let resource = "c";
     let timestamp = blobSASSignatureValues.snapshotTime;
-    let directoryDepth = undefined;
     if (blobSASSignatureValues.blobName) {
-        if (blobSASSignatureValues.isDirectory === true) {
-            resource = "d";
-            directoryDepth = trimBlobName(blobSASSignatureValues.blobName).split("/").length;
+        resource = "b";
+        if (blobSASSignatureValues.snapshotTime) {
+            resource = "bs";
         }
-        else {
-            resource = "b";
-            if (blobSASSignatureValues.snapshotTime) {
-                resource = "bs";
-            }
-            else if (blobSASSignatureValues.versionId) {
-                resource = "bv";
-                timestamp = blobSASSignatureValues.versionId;
-            }
+        else if (blobSASSignatureValues.versionId) {
+            resource = "bv";
+            timestamp = blobSASSignatureValues.versionId;
         }
     }
     // Calling parse and toString guarantees the proper ordering and throws on invalid characters.
@@ -94611,7 +100553,7 @@ function generateBlobSASQueryParametersUDK20201206(blobSASSignatureValues, userD
     ].join("\n");
     const signature = userDelegationKeyCredential.computeHMACSHA256(stringToSign);
     return {
-        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId, blobSASSignatureValues.encryptionScope, undefined, undefined, undefined, directoryDepth),
+        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId, blobSASSignatureValues.encryptionScope),
         stringToSign: stringToSign,
     };
 }
@@ -94637,21 +100579,14 @@ function generateBlobSASQueryParametersUDK20250705(blobSASSignatureValues, userD
     }
     let resource = "c";
     let timestamp = blobSASSignatureValues.snapshotTime;
-    let directoryDepth = undefined;
     if (blobSASSignatureValues.blobName) {
-        if (blobSASSignatureValues.isDirectory === true) {
-            resource = "d";
-            directoryDepth = trimBlobName(blobSASSignatureValues.blobName).split("/").length;
+        resource = "b";
+        if (blobSASSignatureValues.snapshotTime) {
+            resource = "bs";
         }
-        else {
-            resource = "b";
-            if (blobSASSignatureValues.snapshotTime) {
-                resource = "bs";
-            }
-            else if (blobSASSignatureValues.versionId) {
-                resource = "bv";
-                timestamp = blobSASSignatureValues.versionId;
-            }
+        else if (blobSASSignatureValues.versionId) {
+            resource = "bv";
+            timestamp = blobSASSignatureValues.versionId;
         }
     }
     // Calling parse and toString guarantees the proper ordering and throws on invalid characters.
@@ -94687,7 +100622,7 @@ function generateBlobSASQueryParametersUDK20250705(blobSASSignatureValues, userD
         blobSASSignatureValues.preauthorizedAgentObjectId,
         undefined, // agentObjectId
         blobSASSignatureValues.correlationId,
-        userDelegationKeyCredential.userDelegationKey.signedDelegatedUserTenantId, // SignedKeyDelegatedUserTenantId, will be added in a future release.
+        undefined, // SignedKeyDelegatedUserTenantId, will be added in a future release.
         blobSASSignatureValues.delegatedUserObjectId,
         blobSASSignatureValues.ipRange ? ipRangeToString(blobSASSignatureValues.ipRange) : "",
         blobSASSignatureValues.protocol ? blobSASSignatureValues.protocol : "",
@@ -94703,144 +100638,9 @@ function generateBlobSASQueryParametersUDK20250705(blobSASSignatureValues, userD
     ].join("\n");
     const signature = userDelegationKeyCredential.computeHMACSHA256(stringToSign);
     return {
-        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId, blobSASSignatureValues.encryptionScope, blobSASSignatureValues.delegatedUserObjectId, undefined, undefined, directoryDepth),
+        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId, blobSASSignatureValues.encryptionScope, blobSASSignatureValues.delegatedUserObjectId),
         stringToSign: stringToSign,
     };
-}
-/**
- * ONLY AVAILABLE IN NODE.JS RUNTIME.
- * IMPLEMENTATION FOR API VERSION FROM 2020-12-06.
- *
- * Creates an instance of SASQueryParameters.
- *
- * Only accepts required settings needed to create a SAS. For optional settings please
- * set corresponding properties directly, such as permissions, startsOn.
- *
- * WARNING: identifier will be ignored, permissions and expiresOn are required.
- *
- * @param blobSASSignatureValues -
- * @param userDelegationKeyCredential -
- */
-function generateBlobSASQueryParametersUDK20260406(blobSASSignatureValues, userDelegationKeyCredential) {
-    blobSASSignatureValues = SASSignatureValuesSanityCheckAndAutofill(blobSASSignatureValues);
-    // Stored access policies are not supported for a user delegation SAS.
-    if (!blobSASSignatureValues.permissions || !blobSASSignatureValues.expiresOn) {
-        throw new RangeError("Must provide 'permissions' and 'expiresOn' for Blob SAS generation when generating user delegation SAS.");
-    }
-    let resource = "c";
-    let timestamp = blobSASSignatureValues.snapshotTime;
-    let directoryDepth = undefined;
-    if (blobSASSignatureValues.blobName) {
-        if (blobSASSignatureValues.isDirectory === true) {
-            resource = "d";
-            directoryDepth = trimBlobName(blobSASSignatureValues.blobName).split("/").length;
-        }
-        else {
-            resource = "b";
-            if (blobSASSignatureValues.snapshotTime) {
-                resource = "bs";
-            }
-            else if (blobSASSignatureValues.versionId) {
-                resource = "bv";
-                timestamp = blobSASSignatureValues.versionId;
-            }
-        }
-    }
-    // Calling parse and toString guarantees the proper ordering and throws on invalid characters.
-    let verifiedPermissions;
-    if (blobSASSignatureValues.permissions) {
-        if (blobSASSignatureValues.blobName) {
-            verifiedPermissions = BlobSASPermissions.parse(blobSASSignatureValues.permissions.toString()).toString();
-        }
-        else {
-            verifiedPermissions = ContainerSASPermissions.parse(blobSASSignatureValues.permissions.toString()).toString();
-        }
-    }
-    // Signature is generated on the un-url-encoded values.
-    const stringToSign = [
-        verifiedPermissions ? verifiedPermissions : "",
-        blobSASSignatureValues.startsOn
-            ? utils_common_truncatedISO8061Date(blobSASSignatureValues.startsOn, false)
-            : "",
-        blobSASSignatureValues.expiresOn
-            ? utils_common_truncatedISO8061Date(blobSASSignatureValues.expiresOn, false)
-            : "",
-        getCanonicalName(userDelegationKeyCredential.accountName, blobSASSignatureValues.containerName, blobSASSignatureValues.blobName),
-        userDelegationKeyCredential.userDelegationKey.signedObjectId,
-        userDelegationKeyCredential.userDelegationKey.signedTenantId,
-        userDelegationKeyCredential.userDelegationKey.signedStartsOn
-            ? utils_common_truncatedISO8061Date(userDelegationKeyCredential.userDelegationKey.signedStartsOn, false)
-            : "",
-        userDelegationKeyCredential.userDelegationKey.signedExpiresOn
-            ? utils_common_truncatedISO8061Date(userDelegationKeyCredential.userDelegationKey.signedExpiresOn, false)
-            : "",
-        userDelegationKeyCredential.userDelegationKey.signedService,
-        userDelegationKeyCredential.userDelegationKey.signedVersion,
-        blobSASSignatureValues.preauthorizedAgentObjectId,
-        undefined, // agentObjectId
-        blobSASSignatureValues.correlationId,
-        userDelegationKeyCredential.userDelegationKey.signedDelegatedUserTenantId, // SignedKeyDelegatedUserTenantId, will be added in a future release.
-        blobSASSignatureValues.delegatedUserObjectId,
-        blobSASSignatureValues.ipRange ? ipRangeToString(blobSASSignatureValues.ipRange) : "",
-        blobSASSignatureValues.protocol ? blobSASSignatureValues.protocol : "",
-        blobSASSignatureValues.version,
-        resource,
-        timestamp,
-        blobSASSignatureValues.encryptionScope,
-        formatRequestHeadersForSasSigning(blobSASSignatureValues.requestHeaders),
-        formatRequestQueryParametersForSasSigning(blobSASSignatureValues.requestQueryParameters),
-        blobSASSignatureValues.cacheControl,
-        blobSASSignatureValues.contentDisposition,
-        blobSASSignatureValues.contentEncoding,
-        blobSASSignatureValues.contentLanguage,
-        blobSASSignatureValues.contentType,
-    ].join("\n");
-    const signature = userDelegationKeyCredential.computeHMACSHA256(stringToSign);
-    return {
-        sasQueryParameters: new SASQueryParameters(blobSASSignatureValues.version, signature, verifiedPermissions, undefined, undefined, blobSASSignatureValues.protocol, blobSASSignatureValues.startsOn, blobSASSignatureValues.expiresOn, blobSASSignatureValues.ipRange, blobSASSignatureValues.identifier, resource, blobSASSignatureValues.cacheControl, blobSASSignatureValues.contentDisposition, blobSASSignatureValues.contentEncoding, blobSASSignatureValues.contentLanguage, blobSASSignatureValues.contentType, userDelegationKeyCredential.userDelegationKey, blobSASSignatureValues.preauthorizedAgentObjectId, blobSASSignatureValues.correlationId, blobSASSignatureValues.encryptionScope, blobSASSignatureValues.delegatedUserObjectId, getKeysOfRequestHeaders(blobSASSignatureValues.requestHeaders), getKeysOfRequestHeaders(blobSASSignatureValues.requestQueryParameters), directoryDepth),
-        stringToSign: stringToSign,
-    };
-}
-function formatRequestHeadersForSasSigning(requestHeaders) {
-    if (requestHeaders === undefined) {
-        return undefined;
-    }
-    let canonicalValue = "";
-    Object.keys(requestHeaders).forEach(function (key) {
-        // key: the name of the object key
-        // index: the ordinal position of the key within the object
-        canonicalValue = canonicalValue + key + ":" + requestHeaders[key] + "\n";
-    });
-    return canonicalValue;
-}
-function formatRequestQueryParametersForSasSigning(queryParameters) {
-    if (queryParameters === undefined) {
-        return undefined;
-    }
-    let canonicalValue = "";
-    Object.keys(queryParameters).forEach(function (key) {
-        // key: the name of the object key
-        // index: the ordinal position of the key within the object
-        canonicalValue = canonicalValue + "\n" + key + ":" + queryParameters[key];
-    });
-    return canonicalValue;
-}
-function getKeysOfRequestHeaders(requestHeaders) {
-    if (requestHeaders === undefined) {
-        return undefined;
-    }
-    let requestKeys = "";
-    let index = 0;
-    Object.keys(requestHeaders).forEach(function (key) {
-        // key: the name of the object key
-        // index: the ordinal position of the key within the object
-        if (index !== 0) {
-            requestKeys = requestKeys + ",";
-        }
-        requestKeys = requestKeys + key;
-        ++index;
-    });
-    return requestKeys;
 }
 function getCanonicalName(accountName, containerName, blobName) {
     // Container: "/blob/account/containerName"
@@ -94905,18 +100705,8 @@ function SASSignatureValuesSanityCheckAndAutofill(blobSASSignatureValues) {
     blobSASSignatureValues.version = version;
     return blobSASSignatureValues;
 }
-function trimBlobName(blobName) {
-    let internalName = blobName;
-    while (internalName.startsWith("/")) {
-        internalName = internalName.substring(1);
-    }
-    while (internalName.endsWith("/")) {
-        internalName = internalName.substring(0, internalName.length - 1);
-    }
-    return internalName;
-}
 //# sourceMappingURL=BlobSASSignatureValues.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobLeaseClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobLeaseClient.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -95118,7 +100908,7 @@ class BlobLeaseClient {
     }
 }
 //# sourceMappingURL=BlobLeaseClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/RetriableReadableStream.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/RetriableReadableStream.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -95215,7 +101005,6 @@ class RetriableReadableStream extends external_node_stream_.Readable {
             this.push(null);
         }
         else if (this.offset <= this.end) {
-            // TODO if error is CRC64 not match, directly throw out the error.
             // console.log(
             //   `retries: ${this.retries}, max retries: ${this.maxRetries}`
             // );
@@ -95247,10 +101036,9 @@ class RetriableReadableStream extends external_node_stream_.Readable {
     }
 }
 //# sourceMappingURL=RetriableReadableStream.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobDownloadResponse.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobDownloadResponse.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
 
 
 /**
@@ -95671,9 +101459,6 @@ class BlobDownloadResponse {
     get legalHold() {
         return this.originalResponse.legalHold;
     }
-    get structuredBodyType() {
-        return this.originalResponse.structuredBodyType;
-    }
     /**
      * The response body as a browser Blob.
      * Always undefined in node.js.
@@ -95713,14 +101498,11 @@ class BlobDownloadResponse {
      */
     constructor(originalResponse, getter, offset, count, options = {}) {
         this.originalResponse = originalResponse;
-        const streamBody = this.originalResponse.structuredBodyType === undefined
-            ? this.originalResponse.readableStreamBody
-            : structuredMessageDecodingStream(this.originalResponse.readableStreamBody, options);
-        this.blobDownloadStream = new RetriableReadableStream(streamBody, getter, offset, count, options);
+        this.blobDownloadStream = new RetriableReadableStream(this.originalResponse.readableStreamBody, getter, offset, count, options);
     }
 }
 //# sourceMappingURL=BlobDownloadResponse.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroConstants.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroConstants.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 const AVRO_SYNC_MARKER_SIZE = 16;
@@ -95728,7 +101510,7 @@ const AVRO_INIT_BYTES = new Uint8Array([79, 98, 106, 1]);
 const AVRO_CODEC_KEY = "avro.codec";
 const AVRO_SCHEMA_KEY = "avro.schema";
 //# sourceMappingURL=AvroConstants.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroParser.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroParser.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 class AvroParser {
@@ -96052,7 +101834,7 @@ class AvroRecordType extends AvroType {
     }
 }
 //# sourceMappingURL=AvroParser.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/utils/utils.common.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/utils/utils.common.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 function arraysEqual(a, b) {
@@ -96069,7 +101851,7 @@ function arraysEqual(a, b) {
     return true;
 }
 //# sourceMappingURL=utils.common.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroReader.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroReader.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 // TODO: Do a review of non-interfaces
@@ -96186,7 +101968,7 @@ class AvroReader {
     }
 }
 //# sourceMappingURL=AvroReader.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroReadable.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroReadable.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 class AvroReadable {
@@ -96194,7 +101976,7 @@ class AvroReadable {
 //# sourceMappingURL=AvroReadable.js.map
 ;// CONCATENATED MODULE: external "buffer"
 const external_buffer_namespaceObject = require("buffer");
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroReadableFromStream.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/AvroReadableFromStream.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -96281,14 +102063,14 @@ class AvroReadableFromStream extends AvroReadable {
     }
 }
 //# sourceMappingURL=AvroReadableFromStream.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/internal-avro/index.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 
 
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/BlobQuickQueryStream.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/BlobQuickQueryStream.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -96405,7 +102187,7 @@ class BlobQuickQueryStream extends external_node_stream_.Readable {
     }
 }
 //# sourceMappingURL=BlobQuickQueryStream.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobQueryResponse.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobQueryResponse.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -96775,7 +102557,7 @@ class BlobQueryResponse {
     }
 }
 //# sourceMappingURL=BlobQueryResponse.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/models.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/models.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -96891,7 +102673,7 @@ function getBlobServiceAccountAudience(storageAccountName) {
     return `https://${storageAccountName}.blob.core.windows.net/.default`;
 }
 //# sourceMappingURL=models.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/PageBlobRangeResponse.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/PageBlobRangeResponse.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -98149,7 +103931,7 @@ class LroEngine extends Poller {
 
 
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/pollers/BlobStartCopyFromUrlPoller.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/pollers/BlobStartCopyFromUrlPoller.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -98284,7 +104066,7 @@ function makeBlobBeginCopyFromURLPollOperation(state) {
     };
 }
 //# sourceMappingURL=BlobStartCopyFromUrlPoller.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/Range.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/Range.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -98306,7 +104088,7 @@ function rangeToString(iRange) {
         : `bytes=${iRange.offset}-`;
 }
 //# sourceMappingURL=Range.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/Batch.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/Batch.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 // In browser, during webpack or browserify bundling, this module will be replaced by 'events'
@@ -98439,7 +104221,7 @@ class Batch {
 //# sourceMappingURL=Batch.js.map
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = require("node:fs");
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/utils.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/utils.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -98460,30 +104242,22 @@ async function streamToBuffer(stream, buffer, offset, end, encoding) {
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error(`The operation cannot be completed in timeout.`)), REQUEST_TIMEOUT);
         stream.on("readable", () => {
-            // Already filled the requested amount; ignore any further `readable` events.
             if (pos >= count) {
                 clearTimeout(timeout);
                 resolve();
                 return;
             }
-            // Drain all currently-buffered chunks. Required since Node.js v26, where
-            // `stream.read()` returns one buffered chunk at a time instead of the
-            // concatenation of all queued data (see nodejs/node#60441).
-            let chunk;
-            while ((chunk = stream.read()) !== null) {
-                if (typeof chunk === "string") {
-                    chunk = Buffer.from(chunk, encoding);
-                }
-                // How much data needed in this chunk
-                const chunkLength = pos + chunk.length > count ? count - pos : chunk.length;
-                buffer.fill(chunk.slice(0, chunkLength), offset + pos, offset + pos + chunkLength);
-                pos += chunkLength;
-                if (pos >= count) {
-                    clearTimeout(timeout);
-                    resolve();
-                    return;
-                }
+            let chunk = stream.read();
+            if (!chunk) {
+                return;
             }
+            if (typeof chunk === "string") {
+                chunk = Buffer.from(chunk, encoding);
+            }
+            // How much data needed in this chunk
+            const chunkLength = pos + chunk.length > count ? count - pos : chunk.length;
+            buffer.fill(chunk.slice(0, chunkLength), offset + pos, offset + pos + chunkLength);
+            pos += chunkLength;
         });
         stream.on("end", () => {
             clearTimeout(timeout);
@@ -98512,21 +104286,19 @@ async function streamToBuffer2(stream, buffer, encoding) {
     const bufferSize = buffer.length;
     return new Promise((resolve, reject) => {
         stream.on("readable", () => {
-            // Drain all currently-buffered chunks. Required since Node.js v26, where
-            // `stream.read()` returns one buffered chunk at a time instead of the
-            // concatenation of all queued data (see nodejs/node#60441).
-            let chunk;
-            while ((chunk = stream.read()) !== null) {
-                if (typeof chunk === "string") {
-                    chunk = Buffer.from(chunk, encoding);
-                }
-                if (pos + chunk.length > bufferSize) {
-                    reject(new Error(`Stream exceeds buffer size. Buffer size: ${bufferSize}`));
-                    return;
-                }
-                buffer.fill(chunk, pos, pos + chunk.length);
-                pos += chunk.length;
+            let chunk = stream.read();
+            if (!chunk) {
+                return;
             }
+            if (typeof chunk === "string") {
+                chunk = Buffer.from(chunk, encoding);
+            }
+            if (pos + chunk.length > bufferSize) {
+                reject(new Error(`Stream exceeds buffer size. Buffer size: ${bufferSize}`));
+                return;
+            }
+            buffer.fill(chunk, pos, pos + chunk.length);
+            pos += chunk.length;
         });
         stream.on("end", () => {
             resolve(pos);
@@ -98582,7 +104354,7 @@ async function readStreamToLocalFile(rs, file) {
 const fsStat = external_node_util_.promisify(external_node_fs_namespaceObject.stat);
 const fsCreateReadStream = external_node_fs_namespaceObject.createReadStream;
 //# sourceMappingURL=utils.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/Clients.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/Clients.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -98620,10 +104392,6 @@ class BlobClient extends StorageClient_StorageClient {
     _versionId;
     _snapshot;
     /**
-     * Config used in creating blob client instances.
-     */
-    blobClientConfig;
-    /**
      * The name of the blob.
      */
     get name() {
@@ -98646,7 +104414,6 @@ class BlobClient extends StorageClient_StorageClient {
             // (url: string, pipeline: Pipeline)
             url = urlOrConnectionString;
             pipeline = credentialOrPipelineOrContainerName;
-            options = blobNameOrOptions;
         }
         else if ((esm_isNodeLike && credentialOrPipelineOrContainerName instanceof StorageSharedKeyCredential) ||
             credentialOrPipelineOrContainerName instanceof AnonymousCredential ||
@@ -98707,7 +104474,6 @@ class BlobClient extends StorageClient_StorageClient {
         this.blobContext = this.storageClientContext.blob;
         this._snapshot = utils_common_getURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT);
         this._versionId = utils_common_getURLParameter(this.url, utils_constants_URLConstants.Parameters.VERSIONID);
-        this.blobClientConfig = options;
     }
     /**
      * Creates a new BlobClient object identical to the source but with the specified snapshot timestamp.
@@ -98717,7 +104483,7 @@ class BlobClient extends StorageClient_StorageClient {
      * @returns A new BlobClient object identical to the source but with the specified snapshot timestamp
      */
     withSnapshot(snapshot) {
-        return new BlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline, this.blobClientConfig);
+        return new BlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline);
     }
     /**
      * Creates a new BlobClient object pointing to a version of this blob.
@@ -98727,28 +104493,28 @@ class BlobClient extends StorageClient_StorageClient {
      * @returns A new BlobClient object pointing to the version of this blob.
      */
     withVersion(versionId) {
-        return new BlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.VERSIONID, versionId.length === 0 ? undefined : versionId), this.pipeline, this.blobClientConfig);
+        return new BlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.VERSIONID, versionId.length === 0 ? undefined : versionId), this.pipeline);
     }
     /**
      * Creates a AppendBlobClient object.
      *
      */
     getAppendBlobClient() {
-        return new AppendBlobClient(this.url, this.pipeline, this.blobClientConfig);
+        return new AppendBlobClient(this.url, this.pipeline);
     }
     /**
      * Creates a BlockBlobClient object.
      *
      */
     getBlockBlobClient() {
-        return new BlockBlobClient(this.url, this.pipeline, this.blobClientConfig);
+        return new BlockBlobClient(this.url, this.pipeline);
     }
     /**
      * Creates a PageBlobClient object.
      *
      */
     getPageBlobClient() {
-        return new PageBlobClient(this.url, this.pipeline, this.blobClientConfig);
+        return new PageBlobClient(this.url, this.pipeline);
     }
     /**
      * Reads or downloads a blob from the system, including its metadata and properties.
@@ -98769,7 +104535,6 @@ class BlobClient extends StorageClient_StorageClient {
      * ```ts snippet:ReadmeSampleDownloadBlob_Node
      * import { BlobServiceClient } from "@azure/storage-blob";
      * import { DefaultAzureCredential } from "@azure/identity";
-     * import { buffer } from "node:stream/consumers";
      *
      * const account = "<account>";
      * const blobServiceClient = new BlobServiceClient(
@@ -98786,10 +104551,22 @@ class BlobClient extends StorageClient_StorageClient {
      * // In Node.js, get downloaded data by accessing downloadBlockBlobResponse.readableStreamBody
      * const downloadBlockBlobResponse = await blobClient.download();
      * if (downloadBlockBlobResponse.readableStreamBody) {
-     *   // Download the raw bytes of the blob. Use `text` from "node:stream/consumers"
-     *   // instead if you want to read the content as a string directly.
-     *   const downloaded = await buffer(downloadBlockBlobResponse.readableStreamBody);
-     *   console.log(`Downloaded blob content: ${downloaded.toString()}`);
+     *   const downloaded = await streamToString(downloadBlockBlobResponse.readableStreamBody);
+     *   console.log(`Downloaded blob content: ${downloaded}`);
+     * }
+     *
+     * async function streamToString(stream: NodeJS.ReadableStream): Promise<string> {
+     *   const result = await new Promise<Buffer<ArrayBuffer>>((resolve, reject) => {
+     *     const chunks: Buffer[] = [];
+     *     stream.on("data", (data) => {
+     *       chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+     *     });
+     *     stream.on("end", () => {
+     *       resolve(Buffer.concat(chunks));
+     *     });
+     *     stream.on("error", reject);
+     *   });
+     *   return result.toString();
      * }
      * ```
      *
@@ -98825,16 +104602,6 @@ class BlobClient extends StorageClient_StorageClient {
         options.conditions = options.conditions || {};
         ensureCpkIfSpecified(options.customerProvidedKey, this.isHttps);
         return tracingClient.withSpan("BlobClient-download", options, async (updatedOptions) => {
-            let contentChecksumAlgorithm = options.contentChecksumAlgorithm ?? this.blobClientConfig?.downloadContentChecksumAlgorithm;
-            if (contentChecksumAlgorithm === undefined) {
-                contentChecksumAlgorithm = "Customized";
-            }
-            else if (contentChecksumAlgorithm === "Auto") {
-                contentChecksumAlgorithm = "StorageCrc64";
-            }
-            if (contentChecksumAlgorithm === "StorageCrc64") {
-                await StorageCRC64Calculator.init();
-            }
             const res = utils_common_assertResponse((await this.blobContext.download({
                 abortSignal: options.abortSignal,
                 leaseAccessConditions: options.conditions,
@@ -98851,7 +104618,6 @@ class BlobClient extends StorageClient_StorageClient {
                 snapshot: options.snapshot,
                 cpkInfo: options.customerProvidedKey,
                 tracingOptions: updatedOptions.tracingOptions,
-                structuredBodyType: contentChecksumAlgorithm === "StorageCrc64" ? "XSM/1.0; properties=crc64" : undefined,
             })));
             const wrappedRes = {
                 ...res,
@@ -98861,9 +104627,6 @@ class BlobClient extends StorageClient_StorageClient {
             };
             // Return browser response immediately
             if (!esm_isNodeLike) {
-                if (contentChecksumAlgorithm === "StorageCrc64") {
-                    wrappedRes.blobBody = structuredMessageDecodingBrowser(await wrappedRes.blobBody);
-                }
                 return wrappedRes;
             }
             // We support retrying when download stream unexpected ends in Node.js runtime
@@ -98878,16 +104641,9 @@ class BlobClient extends StorageClient_StorageClient {
             if (res.contentLength === undefined) {
                 throw new RangeError(`File download response doesn't contain valid content length header`);
             }
-            if (contentChecksumAlgorithm === "StorageCrc64" &&
-                res.structuredContentLength === undefined) {
-                throw new RangeError(`Unexpected structured content length`);
-            }
             if (!res.etag) {
                 throw new RangeError(`File download response doesn't contain valid etag header`);
             }
-            const expectedContentLength = contentChecksumAlgorithm === "StorageCrc64"
-                ? res.structuredContentLength
-                : res.contentLength;
             return new BlobDownloadResponse(wrappedRes, async (start) => {
                 const updatedDownloadOptions = {
                     leaseAccessConditions: options.conditions,
@@ -98899,14 +104655,13 @@ class BlobClient extends StorageClient_StorageClient {
                         ifTags: options.conditions?.tagConditions,
                     },
                     range: rangeToString({
-                        count: offset + expectedContentLength - start,
+                        count: offset + res.contentLength - start,
                         offset: start,
                     }),
                     rangeGetContentMD5: options.rangeGetContentMD5,
                     rangeGetContentCRC64: options.rangeGetContentCrc64,
                     snapshot: options.snapshot,
                     cpkInfo: options.customerProvidedKey,
-                    structuredBodyType: contentChecksumAlgorithm === "StorageCrc64" ? "XSM/1.0; properties=crc64" : undefined,
                 };
                 // Debug purpose only
                 // console.log(
@@ -98914,17 +104669,11 @@ class BlobClient extends StorageClient_StorageClient {
                 //     updatedOptions.range
                 //   }, options: ${JSON.stringify(updatedOptions)}`
                 // );
-                const resBody = (await this.blobContext.download({
+                return (await this.blobContext.download({
                     abortSignal: options.abortSignal,
                     ...updatedDownloadOptions,
                 })).readableStreamBody;
-                if (contentChecksumAlgorithm === "StorageCrc64") {
-                    return structuredMessageDecodingStream(resBody, {});
-                }
-                else {
-                    return resBody;
-                }
-            }, offset, expectedContentLength, {
+            }, offset, res.contentLength, {
                 maxRetryRequests: options.maxRetryRequests,
                 onProgress: options.onProgress,
             });
@@ -99021,8 +104770,6 @@ class BlobClient extends StorageClient_StorageClient {
                     ifTags: options.conditions?.tagConditions,
                 },
                 tracingOptions: updatedOptions.tracingOptions,
-                accessTierIfModifiedSince: options.conditions?.accessTierIfModifiedSince,
-                accessTierIfUnmodifiedSince: options.conditions?.accessTierIfUnmodifiedSince,
             }));
         });
     }
@@ -99459,7 +105206,6 @@ class BlobClient extends StorageClient_StorageClient {
                         conditions: options.conditions,
                         maxRetryRequests: options.maxRetryRequestsPerBlock,
                         customerProvidedKey: options.customerProvidedKey,
-                        contentChecksumAlgorithm: options.contentChecksumAlgorithm,
                         tracingOptions: updatedOptions.tracingOptions,
                     });
                     const stream = response.readableStreamBody;
@@ -99771,7 +105517,6 @@ class AppendBlobClient extends BlobClient {
             // (url: string, pipeline: Pipeline)
             url = urlOrConnectionString;
             pipeline = credentialOrPipelineOrContainerName;
-            options = blobNameOrOptions;
         }
         else if ((esm_isNodeLike && credentialOrPipelineOrContainerName instanceof StorageSharedKeyCredential) ||
             credentialOrPipelineOrContainerName instanceof AnonymousCredential ||
@@ -99785,7 +105530,6 @@ class AppendBlobClient extends BlobClient {
             typeof credentialOrPipelineOrContainerName !== "string") {
             // (url: string, credential?: StorageSharedKeyCredential | AnonymousCredential | TokenCredential, options?: StoragePipelineOptions)
             url = urlOrConnectionString;
-            options = blobNameOrOptions;
             // The second parameter is undefined. Use anonymous credential.
             pipeline = newPipeline(new AnonymousCredential(), options);
         }
@@ -99826,7 +105570,6 @@ class AppendBlobClient extends BlobClient {
         }
         super(url, pipeline);
         this.appendBlobContext = this.storageClientContext.appendBlob;
-        this.blobClientConfig = options;
     }
     /**
      * Creates a new AppendBlobClient object identical to the source but with the
@@ -99837,7 +105580,7 @@ class AppendBlobClient extends BlobClient {
      * @returns A new AppendBlobClient object identical to the source but with the specified snapshot timestamp.
      */
     withSnapshot(snapshot) {
-        return new AppendBlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline, this.blobClientConfig);
+        return new AppendBlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline);
     }
     /**
      * Creates a 0-length append blob. Call AppendBlock to append data to an append blob.
@@ -99983,7 +105726,7 @@ class AppendBlobClient extends BlobClient {
         options.conditions = options.conditions || {};
         ensureCpkIfSpecified(options.customerProvidedKey, this.isHttps);
         return tracingClient.withSpan("AppendBlobClient-appendBlock", options, async (updatedOptions) => {
-            const parameters = {
+            return utils_common_assertResponse(await this.appendBlobContext.appendBlock(contentLength, body, {
                 abortSignal: options.abortSignal,
                 appendPositionAccessConditions: options.conditions,
                 leaseAccessConditions: options.conditions,
@@ -99994,12 +105737,12 @@ class AppendBlobClient extends BlobClient {
                 requestOptions: {
                     onUploadProgress: options.onProgress,
                 },
+                transactionalContentMD5: options.transactionalContentMD5,
+                transactionalContentCrc64: options.transactionalContentCrc64,
                 cpkInfo: options.customerProvidedKey,
                 encryptionScope: options.encryptionScope,
                 tracingOptions: updatedOptions.tracingOptions,
-            };
-            const uploadBodyParameters = await setUploadChecksumParameters(body, contentLength, parameters, options, this.blobClientConfig?.uploadContentChecksumAlgorithm);
-            return utils_common_assertResponse(await this.appendBlobContext.appendBlock(uploadBodyParameters.contentLength, uploadBodyParameters.body, parameters));
+            }));
         });
     }
     /**
@@ -100043,11 +105786,6 @@ class AppendBlobClient extends BlobClient {
                 encryptionScope: options.encryptionScope,
                 fileRequestIntent: options.sourceShareTokenIntent,
                 tracingOptions: updatedOptions.tracingOptions,
-                sourceCpkInfo: {
-                    sourceEncryptionKey: options.sourceCustomerProvidedKey?.encryptionKey,
-                    sourceEncryptionAlgorithm: options.sourceCustomerProvidedKey?.encryptionAlgorithm,
-                    sourceEncryptionKeySha256: options.sourceCustomerProvidedKey?.encryptionKeySha256,
-                },
             }));
         });
     }
@@ -100080,7 +105818,6 @@ class BlockBlobClient extends BlobClient {
             // (url: string, pipeline: Pipeline)
             url = urlOrConnectionString;
             pipeline = credentialOrPipelineOrContainerName;
-            options = blobNameOrOptions;
         }
         else if ((esm_isNodeLike && credentialOrPipelineOrContainerName instanceof StorageSharedKeyCredential) ||
             credentialOrPipelineOrContainerName instanceof AnonymousCredential ||
@@ -100138,7 +105875,6 @@ class BlockBlobClient extends BlobClient {
         super(url, pipeline);
         this.blockBlobContext = this.storageClientContext.blockBlob;
         this._blobContext = this.storageClientContext.blob;
-        this.blobClientConfig = options;
     }
     /**
      * Creates a new BlockBlobClient object identical to the source but with the
@@ -100149,7 +105885,7 @@ class BlockBlobClient extends BlobClient {
      * @returns A new BlockBlobClient object identical to the source but with the specified snapshot timestamp.
      */
     withSnapshot(snapshot) {
-        return new BlockBlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline, this.blobClientConfig);
+        return new BlockBlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline);
     }
     /**
      * ONLY AVAILABLE IN NODE.JS RUNTIME.
@@ -100161,7 +105897,6 @@ class BlockBlobClient extends BlobClient {
      * ```ts snippet:ClientsQuery
      * import { BlobServiceClient } from "@azure/storage-blob";
      * import { DefaultAzureCredential } from "@azure/identity";
-     * import { buffer } from "node:stream/consumers";
      *
      * const account = "<account>";
      * const blobServiceClient = new BlobServiceClient(
@@ -100177,10 +105912,22 @@ class BlockBlobClient extends BlobClient {
      * // Query and convert a blob to a string
      * const queryBlockBlobResponse = await blockBlobClient.query("select from BlobStorage");
      * if (queryBlockBlobResponse.readableStreamBody) {
-     *   // Read the response bytes. Use `text` from "node:stream/consumers" instead
-     *   // if you want the response as a string directly.
-     *   const downloadedBuffer = await buffer(queryBlockBlobResponse.readableStreamBody);
-     *   console.log(`Query blob content: ${downloadedBuffer.toString()}`);
+     *   const downloadedBuffer = await streamToBuffer(queryBlockBlobResponse.readableStreamBody);
+     *   const downloaded = downloadedBuffer.toString();
+     *   console.log(`Query blob content: ${downloaded}`);
+     * }
+     *
+     * async function streamToBuffer(readableStream: NodeJS.ReadableStream): Promise<Buffer> {
+     *   return new Promise((resolve, reject) => {
+     *     const chunks: Buffer[] = [];
+     *     readableStream.on("data", (data) => {
+     *       chunks.push(data instanceof Buffer ? data : Buffer.from(data));
+     *     });
+     *     readableStream.on("end", () => {
+     *       resolve(Buffer.concat(chunks));
+     *     });
+     *     readableStream.on("error", reject);
+     *   });
      * }
      * ```
      *
@@ -100261,7 +106008,7 @@ class BlockBlobClient extends BlobClient {
         options.conditions = options.conditions || {};
         ensureCpkIfSpecified(options.customerProvidedKey, this.isHttps);
         return tracingClient.withSpan("BlockBlobClient-upload", options, async (updatedOptions) => {
-            const parameters = {
+            return utils_common_assertResponse(await this.blockBlobContext.upload(contentLength, body, {
                 abortSignal: options.abortSignal,
                 blobHttpHeaders: options.blobHTTPHeaders,
                 leaseAccessConditions: options.conditions,
@@ -100281,9 +106028,7 @@ class BlockBlobClient extends BlobClient {
                 tier: toAccessTier(options.tier),
                 blobTagsString: toBlobTagsString(options.tags),
                 tracingOptions: updatedOptions.tracingOptions,
-            };
-            const uploadBodyParameters = await setUploadChecksumParameters(body, contentLength, parameters, options, this.blobClientConfig?.uploadContentChecksumAlgorithm);
-            return utils_common_assertResponse(await this.blockBlobContext.upload(uploadBodyParameters.contentLength, uploadBodyParameters.body, parameters));
+            }));
         });
     }
     /**
@@ -100330,11 +106075,6 @@ class BlockBlobClient extends BlobClient {
                 copySourceTags: options.copySourceTags,
                 fileRequestIntent: options.sourceShareTokenIntent,
                 tracingOptions: updatedOptions.tracingOptions,
-                sourceCpkInfo: {
-                    sourceEncryptionKey: options.sourceCustomerProvidedKey?.encryptionKey,
-                    sourceEncryptionAlgorithm: options.sourceCustomerProvidedKey?.encryptionAlgorithm,
-                    sourceEncryptionKeySha256: options.sourceCustomerProvidedKey?.encryptionKeySha256,
-                },
             }));
         });
     }
@@ -100352,18 +106092,18 @@ class BlockBlobClient extends BlobClient {
     async stageBlock(blockId, body, contentLength, options = {}) {
         ensureCpkIfSpecified(options.customerProvidedKey, this.isHttps);
         return tracingClient.withSpan("BlockBlobClient-stageBlock", options, async (updatedOptions) => {
-            const parameters = {
+            return utils_common_assertResponse(await this.blockBlobContext.stageBlock(blockId, contentLength, body, {
                 abortSignal: options.abortSignal,
                 leaseAccessConditions: options.conditions,
                 requestOptions: {
                     onUploadProgress: options.onProgress,
                 },
+                transactionalContentMD5: options.transactionalContentMD5,
+                transactionalContentCrc64: options.transactionalContentCrc64,
                 cpkInfo: options.customerProvidedKey,
                 encryptionScope: options.encryptionScope,
                 tracingOptions: updatedOptions.tracingOptions,
-            };
-            const uploadBodyParameters = await setUploadChecksumParameters(body, contentLength, parameters, options, this.blobClientConfig?.uploadContentChecksumAlgorithm);
-            return utils_common_assertResponse(await this.blockBlobContext.stageBlock(blockId, uploadBodyParameters.contentLength, uploadBodyParameters.body, parameters));
+            }));
         });
     }
     /**
@@ -100401,11 +106141,6 @@ class BlockBlobClient extends BlobClient {
                 copySourceAuthorization: utils_common_httpAuthorizationToString(options.sourceAuthorization),
                 fileRequestIntent: options.sourceShareTokenIntent,
                 tracingOptions: updatedOptions.tracingOptions,
-                sourceCpkInfo: {
-                    sourceEncryptionKey: options.sourceCustomerProvidedKey?.encryptionKey,
-                    sourceEncryptionAlgorithm: options.sourceCustomerProvidedKey?.encryptionAlgorithm,
-                    sourceEncryptionKeySha256: options.sourceCustomerProvidedKey?.encryptionKeySha256,
-                },
             }));
         });
     }
@@ -100604,7 +106339,6 @@ class BlockBlobClient extends BlobClient {
                         conditions: options.conditions,
                         encryptionScope: options.encryptionScope,
                         tracingOptions: updatedOptions.tracingOptions,
-                        contentChecksumAlgorithm: options.contentChecksumAlgorithm,
                     });
                     // Update progress after block is successfully uploaded to server, in case of block trying
                     // TODO: Hook with convenience layer progress event in finer level
@@ -100685,7 +106419,6 @@ class BlockBlobClient extends BlobClient {
                     conditions: options.conditions,
                     encryptionScope: options.encryptionScope,
                     tracingOptions: updatedOptions.tracingOptions,
-                    contentChecksumAlgorithm: options.contentChecksumAlgorithm,
                 });
                 // Update progress after block is successfully uploaded to server, in case of block trying
                 transferProgress += length;
@@ -100727,7 +106460,6 @@ class PageBlobClient extends BlobClient {
             // (url: string, pipeline: Pipeline)
             url = urlOrConnectionString;
             pipeline = credentialOrPipelineOrContainerName;
-            options = blobNameOrOptions;
         }
         else if ((esm_isNodeLike && credentialOrPipelineOrContainerName instanceof StorageSharedKeyCredential) ||
             credentialOrPipelineOrContainerName instanceof AnonymousCredential ||
@@ -100742,7 +106474,6 @@ class PageBlobClient extends BlobClient {
             // (url: string, credential?: StorageSharedKeyCredential | AnonymousCredential | TokenCredential, options?: StoragePipelineOptions)
             // The second parameter is undefined. Use anonymous credential.
             url = urlOrConnectionString;
-            options = blobNameOrOptions;
             pipeline = newPipeline(new AnonymousCredential(), options);
         }
         else if (credentialOrPipelineOrContainerName &&
@@ -100782,7 +106513,6 @@ class PageBlobClient extends BlobClient {
         }
         super(url, pipeline);
         this.pageBlobContext = this.storageClientContext.pageBlob;
-        this.blobClientConfig = options;
     }
     /**
      * Creates a new PageBlobClient object identical to the source but with the
@@ -100793,7 +106523,7 @@ class PageBlobClient extends BlobClient {
      * @returns A new PageBlobClient object identical to the source but with the specified snapshot timestamp.
      */
     withSnapshot(snapshot) {
-        return new PageBlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline, this.blobClientConfig);
+        return new PageBlobClient(utils_common_setURLParameter(this.url, utils_constants_URLConstants.Parameters.SNAPSHOT, snapshot.length === 0 ? undefined : snapshot), this.pipeline);
     }
     /**
      * Creates a page blob of the specified length. Call uploadPages to upload data
@@ -100879,7 +106609,7 @@ class PageBlobClient extends BlobClient {
         options.conditions = options.conditions || {};
         ensureCpkIfSpecified(options.customerProvidedKey, this.isHttps);
         return tracingClient.withSpan("PageBlobClient-uploadPages", options, async (updatedOptions) => {
-            const parameters = {
+            return utils_common_assertResponse(await this.pageBlobContext.uploadPages(count, body, {
                 abortSignal: options.abortSignal,
                 leaseAccessConditions: options.conditions,
                 modifiedAccessConditions: {
@@ -100891,12 +106621,12 @@ class PageBlobClient extends BlobClient {
                 },
                 range: rangeToString({ offset, count }),
                 sequenceNumberAccessConditions: options.conditions,
+                transactionalContentMD5: options.transactionalContentMD5,
+                transactionalContentCrc64: options.transactionalContentCrc64,
                 cpkInfo: options.customerProvidedKey,
                 encryptionScope: options.encryptionScope,
                 tracingOptions: updatedOptions.tracingOptions,
-            };
-            const uploadBodyParameters = await setUploadChecksumParameters(body, count, parameters, options, this.blobClientConfig?.uploadContentChecksumAlgorithm);
-            return utils_common_assertResponse(await this.pageBlobContext.uploadPages(uploadBodyParameters.contentLength, uploadBodyParameters.body, parameters));
+            }));
         });
     }
     /**
@@ -100936,11 +106666,6 @@ class PageBlobClient extends BlobClient {
                 copySourceAuthorization: utils_common_httpAuthorizationToString(options.sourceAuthorization),
                 fileRequestIntent: options.sourceShareTokenIntent,
                 tracingOptions: updatedOptions.tracingOptions,
-                sourceCpkInfo: {
-                    sourceEncryptionKey: options.sourceCustomerProvidedKey?.encryptionKey,
-                    sourceEncryptionAlgorithm: options.sourceCustomerProvidedKey?.encryptionAlgorithm,
-                    sourceEncryptionKeySha256: options.sourceCustomerProvidedKey?.encryptionKeySha256,
-                },
             }));
         });
     }
@@ -101475,7 +107200,7 @@ class PageBlobClient extends BlobClient {
     }
 }
 //# sourceMappingURL=Clients.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BatchUtils.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BatchUtils.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -101491,7 +107216,7 @@ function utf8ByteLength(str) {
     return Buffer.byteLength(str);
 }
 //# sourceMappingURL=BatchUtils.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BatchResponseParser.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BatchResponseParser.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -101634,7 +107359,7 @@ class BatchResponseParser {
     }
 }
 //# sourceMappingURL=BatchResponseParser.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/Mutex.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/utils/Mutex.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 var MutexLockStatus;
@@ -101700,7 +107425,7 @@ class Mutex {
     }
 }
 //# sourceMappingURL=Mutex.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobBatch.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobBatch.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -101975,7 +107700,7 @@ function batchHeaderFilterPolicy() {
     };
 }
 //# sourceMappingURL=BlobBatch.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobBatchClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobBatchClient.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -102148,7 +107873,7 @@ class BlobBatchClient {
     }
 }
 //# sourceMappingURL=BlobBatchClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/ContainerClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/ContainerClient.js
 
 
 
@@ -102170,7 +107895,6 @@ class ContainerClient extends StorageClient_StorageClient {
      */
     containerContext;
     _containerName;
-    blobClientConfig;
     /**
      * The name of the container.
      */
@@ -102185,7 +107909,7 @@ class ContainerClient extends StorageClient_StorageClient {
         let url;
         options = options || {};
         if (isPipelineLike(credentialOrPipelineOrContainerName)) {
-            // (url: string, pipeline: Pipeline, options?: BlobClientConfig)
+            // (url: string, pipeline: Pipeline)
             url = urlOrConnectionString;
             pipeline = credentialOrPipelineOrContainerName;
         }
@@ -102238,7 +107962,6 @@ class ContainerClient extends StorageClient_StorageClient {
         super(url, pipeline);
         this._containerName = this.getContainerNameFromUrl();
         this.containerContext = this.storageClientContext.container;
-        this.blobClientConfig = options;
     }
     /**
      * Creates a new container under the specified account. If the container with
@@ -102337,7 +108060,7 @@ class ContainerClient extends StorageClient_StorageClient {
      * @returns A new BlobClient object for the given blob name.
      */
     getBlobClient(blobName) {
-        return new BlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline, this.blobClientConfig);
+        return new BlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline);
     }
     /**
      * Creates an {@link AppendBlobClient}
@@ -102345,7 +108068,7 @@ class ContainerClient extends StorageClient_StorageClient {
      * @param blobName - An append blob name
      */
     getAppendBlobClient(blobName) {
-        return new AppendBlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline, this.blobClientConfig);
+        return new AppendBlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline);
     }
     /**
      * Creates a {@link BlockBlobClient}
@@ -102375,7 +108098,7 @@ class ContainerClient extends StorageClient_StorageClient {
      * ```
      */
     getBlockBlobClient(blobName) {
-        return new BlockBlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline, this.blobClientConfig);
+        return new BlockBlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline);
     }
     /**
      * Creates a {@link PageBlobClient}
@@ -102383,7 +108106,7 @@ class ContainerClient extends StorageClient_StorageClient {
      * @param blobName - A page blob name
      */
     getPageBlobClient(blobName) {
-        return new PageBlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline, this.blobClientConfig);
+        return new PageBlobClient(utils_common_appendToURLPath(this.url, utils_common_EscapePath(blobName)), this.pipeline);
     }
     /**
      * Returns all user-defined metadata and system properties for the specified
@@ -103444,7 +109167,7 @@ class ContainerClient extends StorageClient_StorageClient {
     }
 }
 //# sourceMappingURL=ContainerClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASPermissions.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASPermissions.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -103670,7 +109393,7 @@ class AccountSASPermissions {
     }
 }
 //# sourceMappingURL=AccountSASPermissions.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASResourceTypes.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASResourceTypes.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -103741,7 +109464,7 @@ class AccountSASResourceTypes {
     }
 }
 //# sourceMappingURL=AccountSASResourceTypes.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASServices.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASServices.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /**
@@ -103820,7 +109543,7 @@ class AccountSASServices {
     }
 }
 //# sourceMappingURL=AccountSASServices.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASSignatureValues.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/sas/AccountSASSignatureValues.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
@@ -103921,7 +109644,7 @@ function generateAccountSASQueryParametersInternal(accountSASSignatureValues, sh
     };
 }
 //# sourceMappingURL=AccountSASSignatureValues.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobServiceClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/BlobServiceClient.js
 
 
 
@@ -103936,13 +109659,6 @@ function generateAccountSASQueryParametersInternal(accountSASSignatureValues, sh
 
 
 
-function isBlobGetUserDelegationKeyParameters(parameter) {
-    if (!parameter || typeof parameter !== "object") {
-        return false;
-    }
-    const castParameter = parameter;
-    return castParameter.expiresOn instanceof Date;
-}
 /**
  * A BlobServiceClient represents a Client to the Azure Storage Blob service allowing you
  * to manipulate blob containers.
@@ -103952,7 +109668,6 @@ class BlobServiceClient extends StorageClient_StorageClient {
      * serviceContext provided by protocol layer.
      */
     serviceContext;
-    blobClientConfig;
     /**
      *
      * Creates an instance of BlobServiceClient from connection string.
@@ -103986,7 +109701,7 @@ class BlobServiceClient extends StorageClient_StorageClient {
         }
         else if (extractedCreds.kind === "SASConnString") {
             const pipeline = newPipeline(new AnonymousCredential(), options);
-            return new BlobServiceClient(extractedCreds.url + "?" + extractedCreds.accountSas, pipeline, options);
+            return new BlobServiceClient(extractedCreds.url + "?" + extractedCreds.accountSas, pipeline);
         }
         else {
             throw new Error("Connection string must be either an Account connection string or a SAS connection string");
@@ -103996,7 +109711,6 @@ class BlobServiceClient extends StorageClient_StorageClient {
     // Legacy, no fix for eslint error without breaking. Disable it for this interface.
     /* eslint-disable-next-line @azure/azure-sdk/ts-naming-options*/
     options) {
-        options = options ?? {};
         let pipeline;
         if (isPipelineLike(credentialOrPipeline)) {
             pipeline = credentialOrPipeline;
@@ -104012,7 +109726,6 @@ class BlobServiceClient extends StorageClient_StorageClient {
         }
         super(url, pipeline);
         this.serviceContext = this.storageClientContext.service;
-        this.blobClientConfig = options;
     }
     /**
      * Creates a {@link ContainerClient} object
@@ -104036,7 +109749,7 @@ class BlobServiceClient extends StorageClient_StorageClient {
      * ```
      */
     getContainerClient(containerName) {
-        return new ContainerClient(utils_common_appendToURLPath(this.url, encodeURIComponent(containerName)), this.pipeline, this.blobClientConfig);
+        return new ContainerClient(utils_common_appendToURLPath(this.url, encodeURIComponent(containerName)), this.pipeline);
     }
     /**
      * Create a Blob container. @see https://learn.microsoft.com/rest/api/storageservices/create-container
@@ -104520,25 +110233,24 @@ class BlobServiceClient extends StorageClient_StorageClient {
             },
         };
     }
-    async getUserDelegationKey(startsOnOrParam, expiresOnOrOption, options = {}) {
-        let startsOn = startsOnOrParam;
-        let expiresOn = expiresOnOrOption;
-        let userDelegationTid = undefined;
-        let getUserDelegationKeyOptions = options;
-        if (isBlobGetUserDelegationKeyParameters(startsOnOrParam)) {
-            startsOn = startsOnOrParam.startsOn;
-            expiresOn = startsOnOrParam.expiresOn;
-            userDelegationTid = startsOnOrParam.delegatedUserTenantId;
-            getUserDelegationKeyOptions = expiresOnOrOption;
-            getUserDelegationKeyOptions = getUserDelegationKeyOptions ?? {};
-        }
-        return tracingClient.withSpan("BlobServiceClient-getUserDelegationKey", getUserDelegationKeyOptions, async (updatedOptions) => {
+    /**
+     * ONLY AVAILABLE WHEN USING BEARER TOKEN AUTHENTICATION (TokenCredential).
+     *
+     * Retrieves a user delegation key for the Blob service. This is only a valid operation when using
+     * bearer token authentication.
+     *
+     * @see https://learn.microsoft.com/rest/api/storageservices/get-user-delegation-key
+     *
+     * @param startsOn -      The start time for the user delegation SAS. Must be within 7 days of the current time
+     * @param expiresOn -     The end time for the user delegation SAS. Must be within 7 days of the current time
+     */
+    async getUserDelegationKey(startsOn, expiresOn, options = {}) {
+        return tracingClient.withSpan("BlobServiceClient-getUserDelegationKey", options, async (updatedOptions) => {
             const response = utils_common_assertResponse(await this.serviceContext.getUserDelegationKey({
                 startsOn: utils_common_truncatedISO8061Date(startsOn, false),
                 expiresOn: utils_common_truncatedISO8061Date(expiresOn, false),
-                delegatedUserTid: userDelegationTid,
             }, {
-                abortSignal: getUserDelegationKeyOptions.abortSignal,
+                abortSignal: options.abortSignal,
                 tracingOptions: updatedOptions.tracingOptions,
             }));
             const userDelegationKey = {
@@ -104548,7 +110260,6 @@ class BlobServiceClient extends StorageClient_StorageClient {
                 signedExpiresOn: new Date(response.signedExpiresOn),
                 signedService: response.signedService,
                 signedVersion: response.signedVersion,
-                signedDelegatedUserTenantId: response.signedDelegatedUserTenantId,
                 value: response.value,
             };
             const res = {
@@ -104636,7 +110347,7 @@ class BlobServiceClient extends StorageClient_StorageClient {
     }
 }
 //# sourceMappingURL=BlobServiceClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generatedModels.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/generatedModels.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 /** Known values of {@link EncryptionAlgorithmType} that the service accepts. */
@@ -104645,9 +110356,10 @@ var generatedModels_KnownEncryptionAlgorithmType;
     KnownEncryptionAlgorithmType["AES256"] = "AES256";
 })(generatedModels_KnownEncryptionAlgorithmType || (generatedModels_KnownEncryptionAlgorithmType = {}));
 //# sourceMappingURL=generatedModels.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.33.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@azure+storage-blob@12.31.0_supports-color@8.1.1/node_modules/@azure/storage-blob/dist/esm/index.js
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
 
 
 
@@ -104670,7 +110382,7 @@ var generatedModels_KnownEncryptionAlgorithmType;
 
 
 //# sourceMappingURL=index.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/errors.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/errors.js
 class FilesNotFoundError extends Error {
     constructor(files = []) {
         let message = 'No files were found to upload';
@@ -104738,7 +110450,7 @@ class RateLimitError extends Error {
     }
 }
 //# sourceMappingURL=errors.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/uploadUtils.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/uploadUtils.js
 var uploadUtils_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -104878,7 +110590,7 @@ function uploadCacheArchiveSDK(signedUploadURL, archivePath, options) {
     });
 }
 //# sourceMappingURL=uploadUtils.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/requestUtils.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/requestUtils.js
 var requestUtils_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -104984,7 +110696,7 @@ function retryHttpClientResponse(name_1, method_1) {
     });
 }
 //# sourceMappingURL=requestUtils.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/downloadUtils.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/downloadUtils.js
 var downloadUtils_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -105332,7 +111044,7 @@ const promiseWithTimeout = (timeoutMs, promise) => downloadUtils_awaiter(void 0,
     });
 });
 //# sourceMappingURL=downloadUtils.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/options.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/options.js
 
 /**
  * Returns a copy of the upload options with defaults filled in.
@@ -105422,7 +111134,7 @@ function getDownloadOptions(copy) {
     return result;
 }
 //# sourceMappingURL=options.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/config.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/config.js
 function isGhes() {
     const ghUrl = new URL(process.env['GITHUB_SERVER_URL'] || 'https://github.com');
     const hostname = ghUrl.hostname.trimEnd().toUpperCase();
@@ -105472,9 +111184,9 @@ function getCacheServiceURL() {
     }
 }
 //# sourceMappingURL=config.js.map
-// EXTERNAL MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/package-version.cjs
-var package_version = __nccwpck_require__(4358);
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/user-agent.js
+// EXTERNAL MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/package-version.cjs
+var package_version = __nccwpck_require__(7457);
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/user-agent.js
 
 /**
  * Ensure that this User Agent String is used in all HTTP calls so that we can monitor telemetry between different versions of this package
@@ -105483,7 +111195,7 @@ function user_agent_getUserAgentString() {
     return `@actions/cache-${package_version.version}`;
 }
 //# sourceMappingURL=user-agent.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/cacheHttpClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/cacheHttpClient.js
 var cacheHttpClient_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -105721,7 +111433,7 @@ function saveCache(cacheId, archivePath, signedUploadURL, options) {
 var commonjs = __nccwpck_require__(6600);
 // EXTERNAL MODULE: ./node_modules/.pnpm/@protobuf-ts+runtime@2.11.1/node_modules/@protobuf-ts/runtime/build/commonjs/index.js
 var build_commonjs = __nccwpck_require__(3784);
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/entities/v1/cachescope.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/entities/v1/cachescope.js
 
 
 
@@ -105782,7 +111494,7 @@ class CacheScope$Type extends build_commonjs.MessageType {
  */
 const CacheScope = new CacheScope$Type();
 //# sourceMappingURL=cachescope.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/entities/v1/cachemetadata.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/entities/v1/cachemetadata.js
 
 
 
@@ -105844,7 +111556,7 @@ class CacheMetadata$Type extends build_commonjs.MessageType {
  */
 const CacheMetadata = new CacheMetadata$Type();
 //# sourceMappingURL=cachemetadata.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/api/v1/cache.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/api/v1/cache.js
 // @generated by protobuf-ts 2.9.1 with parameter long_type_string,client_none,generate_dependencies
 // @generated from protobuf file "results/api/v1/cache.proto" (package "github.actions.results.api.v1", syntax proto3)
 // tslint:disable
@@ -106244,7 +111956,7 @@ const CacheService = new commonjs/* ServiceType */.C0("github.actions.results.ap
     { name: "GetCacheEntryDownloadURL", options: {}, I: cache_GetCacheEntryDownloadURLRequest, O: cache_GetCacheEntryDownloadURLResponse }
 ]);
 //# sourceMappingURL=cache.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/api/v1/cache.twirp-client.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/generated/results/api/v1/cache.twirp-client.js
 
 class CacheServiceClientJSON {
     constructor(rpc) {
@@ -106308,7 +112020,7 @@ class CacheServiceClientProtobuf {
     }
 }
 //# sourceMappingURL=cache.twirp-client.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/util.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/util.js
 
 /**
  * Masks the `sig` parameter in a URL and sets it as a secret.
@@ -106378,7 +112090,7 @@ function maskSecretUrls(body) {
     }
 }
 //# sourceMappingURL=util.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/cacheTwirpClient.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/shared/cacheTwirpClient.js
 var cacheTwirpClient_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -106551,7 +112263,7 @@ function internalCacheTwirpClient(options) {
     return new CacheServiceClientJSON(client);
 }
 //# sourceMappingURL=cacheTwirpClient.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/tar.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/internal/tar.js
 var tar_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -106561,6 +112273,7 @@ var tar_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _argu
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+
 
 
 
@@ -106623,19 +112336,21 @@ function getTarArgs(tarPath_1, compressionMethod_1, type_1) {
             case 'create':
                 args.push('--posix', '-cf', BSD_TAR_ZSTD
                     ? tarFile
-                    : cacheFileName.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'), '--exclude', BSD_TAR_ZSTD
+                    : cacheFileName.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'), '--exclude', BSD_TAR_ZSTD
                     ? tarFile
-                    : cacheFileName.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'), '-P', '-C', workingDirectory.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'), '--files-from', ManifestFilename);
+                    : cacheFileName.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'), '-P', '-C', workingDirectory.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'), '--files-from', ManifestFilename);
                 break;
             case 'extract':
                 args.push('-xf', BSD_TAR_ZSTD
                     ? tarFile
-                    : archivePath.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'), '-P', '-C', workingDirectory.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'));
+                    : archivePath.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'), '-P', '-C', BSD_TAR_ZSTD
+                    ? quoteAbsolutePath(workingDirectory)
+                    : workingDirectory.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'));
                 break;
             case 'list':
                 args.push('-tf', BSD_TAR_ZSTD
                     ? tarFile
-                    : archivePath.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'), '-P');
+                    : archivePath.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'), '-P');
                 break;
         }
         // Platform specific args
@@ -106670,15 +112385,18 @@ function getCommands(compressionMethod_1, type_1) {
         else {
             args = [[...tarArgs].join(' '), [...compressionArgs].join(' ')];
         }
-        if (BSD_TAR_ZSTD) {
-            return args;
-        }
-        return [args.join(' ')];
+        return {
+            commands: BSD_TAR_ZSTD ? args : [args.join(' ')],
+            requiresTempDirectory: BSD_TAR_ZSTD && type !== 'create'
+        };
     });
 }
 function getWorkingDirectory() {
     var _a;
     return (_a = process.env['GITHUB_WORKSPACE']) !== null && _a !== void 0 ? _a : process.cwd();
+}
+function quoteAbsolutePath(filePath) {
+    return `"${external_path_namespaceObject.resolve(filePath).replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/')}"`;
 }
 // Common function for extractTar and listTar to get the compression method
 function getDecompressionProgram(tarPath, compressionMethod, archivePath) {
@@ -106696,7 +112414,7 @@ function getDecompressionProgram(tarPath, compressionMethod, archivePath) {
                     ? [
                         'zstd -d --long=30 --force -o',
                         TarFilename,
-                        archivePath.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/')
+                        quoteAbsolutePath(archivePath)
                     ]
                     : [
                         '--use-compress-program',
@@ -106704,11 +112422,7 @@ function getDecompressionProgram(tarPath, compressionMethod, archivePath) {
                     ];
             case CompressionMethod.ZstdWithoutLong:
                 return BSD_TAR_ZSTD
-                    ? [
-                        'zstd -d --force -o',
-                        TarFilename,
-                        archivePath.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/')
-                    ]
+                    ? ['zstd -d --force -o', TarFilename, quoteAbsolutePath(archivePath)]
                     : ['--use-compress-program', tar_IS_WINDOWS ? '"zstd -d"' : 'unzstd'];
             default:
                 return ['-z'];
@@ -106732,7 +112446,7 @@ function getCompressionProgram(tarPath, compressionMethod) {
                 return BSD_TAR_ZSTD
                     ? [
                         'zstd -T0 --long=30 --force -o',
-                        cacheFileName.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'),
+                        cacheFileName.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'),
                         TarFilename
                     ]
                     : [
@@ -106743,7 +112457,7 @@ function getCompressionProgram(tarPath, compressionMethod) {
                 return BSD_TAR_ZSTD
                     ? [
                         'zstd -T0 --force -o',
-                        cacheFileName.replace(new RegExp(`\\${external_path_.sep}`, 'g'), '/'),
+                        cacheFileName.replace(new RegExp(`\\${external_path_namespaceObject.sep}`, 'g'), '/'),
                         TarFilename
                     ]
                     : ['--use-compress-program', tar_IS_WINDOWS ? '"zstd -T0"' : 'zstdmt'];
@@ -106768,11 +112482,34 @@ function execCommands(commands, cwd) {
         }
     });
 }
+function execReadCommands(archivePath, compressionMethod, type) {
+    return tar_awaiter(this, void 0, void 0, function* () {
+        const { commands, requiresTempDirectory } = yield getCommands(compressionMethod, type, archivePath);
+        // The Windows BSD-tar fallback decompresses into cache.tar before reading
+        // it. Isolate that intermediate for each list/extract operation, including
+        // debug listings during saves.
+        const tempDirectory = requiresTempDirectory
+            ? yield createTempDirectory()
+            : undefined;
+        try {
+            yield execCommands(commands, tempDirectory);
+        }
+        finally {
+            if (tempDirectory) {
+                try {
+                    yield rmRF(tempDirectory);
+                }
+                catch (error) {
+                    core_debug(`Failed to delete temporary tar directory: ${error}`);
+                }
+            }
+        }
+    });
+}
 // List the contents of a tar
 function listTar(archivePath, compressionMethod) {
     return tar_awaiter(this, void 0, void 0, function* () {
-        const commands = yield getCommands(compressionMethod, 'list', archivePath);
-        yield execCommands(commands);
+        yield execReadCommands(archivePath, compressionMethod, 'list');
     });
 }
 // Extract a tar
@@ -106781,21 +112518,20 @@ function extractTar(archivePath, compressionMethod) {
         // Create directory to extract tar into
         const workingDirectory = getWorkingDirectory();
         yield mkdirP(workingDirectory);
-        const commands = yield getCommands(compressionMethod, 'extract', archivePath);
-        yield execCommands(commands);
+        yield execReadCommands(archivePath, compressionMethod, 'extract');
     });
 }
 // Create a tar
 function createTar(archiveFolder, sourceDirectories, compressionMethod) {
     return tar_awaiter(this, void 0, void 0, function* () {
         // Write source directories to manifest.txt to avoid command length limits
-        (0,external_fs_namespaceObject.writeFileSync)(external_path_.join(archiveFolder, ManifestFilename), sourceDirectories.join('\n'));
-        const commands = yield getCommands(compressionMethod, 'create');
+        (0,external_fs_namespaceObject.writeFileSync)(external_path_namespaceObject.join(archiveFolder, ManifestFilename), sourceDirectories.join('\n'));
+        const { commands } = yield getCommands(compressionMethod, 'create');
         yield execCommands(commands, archiveFolder);
     });
 }
 //# sourceMappingURL=tar.js.map
-;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.2.0_supports-color@8.1.1/node_modules/@actions/cache/lib/cache.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/@actions+cache@6.3.0_supports-color@8.1.1/node_modules/@actions/cache/lib/cache.js
 var cache_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -106995,7 +112731,7 @@ function restoreCacheV1(paths_1, primaryKey_1, restoreKeys_1, options_1) {
                 info('Lookup only - skipping download');
                 return cacheEntry.cacheKey;
             }
-            archivePath = external_path_.join(yield createTempDirectory(), getCacheFileName(compressionMethod));
+            archivePath = external_path_namespaceObject.join(yield createTempDirectory(), getCacheFileName(compressionMethod));
             core_debug(`Archive Path: ${archivePath}`);
             // Download the cache from the cache entry
             yield downloadCache(cacheEntry.archiveLocation, archivePath, options);
@@ -107103,7 +112839,7 @@ function restoreCacheV2(paths_1, primaryKey_1, restoreKeys_1, options_1) {
                 info('Lookup only - skipping download');
                 return response.matchedKey;
             }
-            archivePath = external_path_.join(yield createTempDirectory(), getCacheFileName(compressionMethod));
+            archivePath = external_path_namespaceObject.join(yield createTempDirectory(), getCacheFileName(compressionMethod));
             core_debug(`Archive path: ${archivePath}`);
             core_debug(`Starting download of archive to: ${archivePath}`);
             yield downloadCache(response.signedDownloadUrl, archivePath, options);
@@ -107200,7 +112936,7 @@ function saveCacheV1(paths_1, key_1, options_1) {
             throw new Error(`Path Validation Error: Path(s) specified in the action for caching do(es) not exist, hence no cache is being saved.`);
         }
         const archiveFolder = yield createTempDirectory();
-        const archivePath = external_path_.join(archiveFolder, getCacheFileName(compressionMethod));
+        const archivePath = external_path_namespaceObject.join(archiveFolder, getCacheFileName(compressionMethod));
         core_debug(`Archive Path: ${archivePath}`);
         try {
             yield createTar(archiveFolder, cachePaths, compressionMethod);
@@ -107303,7 +113039,7 @@ function saveCacheV2(paths_1, key_1, options_1) {
             throw new Error(`Path Validation Error: Path(s) specified in the action for caching do(es) not exist, hence no cache is being saved.`);
         }
         const archiveFolder = yield createTempDirectory();
-        const archivePath = external_path_.join(archiveFolder, getCacheFileName(compressionMethod));
+        const archivePath = external_path_namespaceObject.join(archiveFolder, getCacheFileName(compressionMethod));
         core_debug(`Archive Path: ${archivePath}`);
         try {
             yield createTar(archiveFolder, cachePaths, compressionMethod);
@@ -107408,8 +113144,8 @@ function saveCacheV2(paths_1, key_1, options_1) {
 function getCachePaths() {
     const home = external_os_.homedir();
     return [
-        external_path_.join(home, '.local', 'share', 'uv'),
-        external_path_.join(home, '.local', 'bin'),
+        external_path_namespaceObject.join(home, '.local', 'share', 'uv'),
+        external_path_namespaceObject.join(home, '.local', 'bin'),
     ];
 }
 function getCacheKey(version, pipInstallArgs) {
@@ -107516,7 +113252,7 @@ async function run() {
         const pipInstallArgs = getInput('pip-install-args');
         const cacheEnabled = getInput('cache') !== 'false' && version !== '';
         const isWindows = external_os_.platform() === 'win32';
-        const uvBinDir = external_path_.join(external_os_.homedir(), '.local', 'bin');
+        const uvBinDir = external_path_namespaceObject.join(external_os_.homedir(), '.local', 'bin');
         // Try to restore from cache (only when version is pinned)
         let cacheHit = false;
         if (cacheEnabled) {
@@ -107574,11 +113310,11 @@ async function run() {
             }
         }
         addPath(uvBinDir);
-        process.env.PATH = `${uvBinDir}${external_path_.delimiter}${process.env.PATH ?? ''}`;
+        process.env.PATH = `${uvBinDir}${external_path_namespaceObject.delimiter}${process.env.PATH ?? ''}`;
         // Determine config file path
         let resolvedConfigPath = configPath;
         if (config && !configPath) {
-            const tmpConfigPath = external_path_.join(external_os_.tmpdir(), 'litellm-config.yaml');
+            const tmpConfigPath = external_path_namespaceObject.join(external_os_.tmpdir(), 'litellm-config.yaml');
             external_fs_namespaceObject.writeFileSync(tmpConfigPath, config, 'utf-8');
             resolvedConfigPath = tmpConfigPath;
             info(`Wrote inline config to ${tmpConfigPath}`);
@@ -107604,7 +113340,7 @@ async function run() {
         }
         env.LITELLM_LOG = logLevel;
         // Start the proxy server
-        const logFilePath = external_path_.join(external_os_.tmpdir(), 'litellm-proxy.log');
+        const logFilePath = external_path_namespaceObject.join(external_os_.tmpdir(), 'litellm-proxy.log');
         const logFd = external_fs_namespaceObject.openSync(logFilePath, 'w');
         info(`Starting LiteLLM proxy on port ${port}...`);
         info(`Command: litellm ${litellmArgs.join(' ')}`);
