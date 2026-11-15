@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.6/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.7/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -25,7 +25,23 @@
     "lineWidth": 80
   },
   "linter": {
-    "enabled": false
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "correctness": {
+        "useQwikValidLexicalScope": "off"
+      },
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
+      "style": {
+        "noExcessiveLinesPerFile": "off",
+        "useExportsLast": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "off"
+      }
+    }
   },
   "assist": {
     "enabled": false

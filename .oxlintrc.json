@@ -1,23 +1,44 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "categories": {
-    "correctness": "error"
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
   },
   "options": {
     "denyWarnings": true,
-    "reportUnusedDisableDirectives": "error"
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true
   },
   "env": {
     "builtin": true,
     "node": true
   },
-  "ignorePatterns": ["coverage/**", "dist/**", "lib/**", "node_modules/**"],
+  "ignorePatterns": [
+    "coverage/**",
+    "dist/**",
+    "lib/**",
+    "node_modules/**",
+    "src/__tests__/**"
+  ],
   "overrides": [
     {
       "files": ["src/__tests__/**/*.test.ts"],
       "env": {
         "jest": true
+      },
+      "rules": {
+        "typescript/no-floating-promises": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unnecessary-type-assertion": "off"
       }
     }
-  ]
+  ],
+  "plugins": ["import", "oxc", "promise", "typescript", "unicorn"],
+  "rules": {
+    "eslint/no-await-in-loop": "off"
+  }
 }
