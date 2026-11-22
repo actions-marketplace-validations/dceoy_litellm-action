@@ -14,13 +14,7 @@
     "builtin": true,
     "node": true
   },
-  "ignorePatterns": [
-    "coverage/**",
-    "dist/**",
-    "lib/**",
-    "node_modules/**",
-    "src/__tests__/**"
-  ],
+  "ignorePatterns": ["coverage/**", "dist/**", "lib/**", "node_modules/**"],
   "overrides": [
     {
       "files": ["src/__tests__/**/*.test.ts"],

@@ -27,19 +27,20 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended",
+      "preset": "all",
       "correctness": {
-        "useQwikValidLexicalScope": "off"
+        "useQwikValidLexicalScope": "off",
+        "noNodejsModules": "off",
+        "useImportExtensions": "off"
       },
       "complexity": {
         "useLiteralKeys": "off"
       },
       "style": {
         "noExcessiveLinesPerFile": "off",
-        "useExportsLast": "off"
-      },
-      "suspicious": {
-        "noExplicitAny": "off"
+        "useExportsLast": "off",
+        "noDefaultExport": "off",
+        "noCommonJs": "off"
       }
     }
   },
@@ -52,6 +53,37 @@
       "jsxQuoteStyle": "single",
       "semicolons": "always",
       "trailingCommas": "all"
+    },
+    "globals": ["describe", "it", "expect", "jest", "beforeEach", "afterEach"]
+  },
+  "overrides": [
+    {
+      "includes": ["src/__tests__/**"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noNamespaceImport": "off",
+            "useTopLevelRegex": "off"
+          },
+          "style": {
+            "useThrowOnlyError": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["scripts/**/*.js"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noProcessGlobal": "off",
+            "noGlobalDirnameFilename": "off"
+          },
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
     }
-  }
+  ]
 }

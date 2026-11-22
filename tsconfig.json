@@ -20,8 +20,9 @@
     "noImplicitOverride": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+    "isolatedModules": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "lib", "src/__tests__"]
+  "exclude": ["node_modules", "dist", "lib"]
 }
