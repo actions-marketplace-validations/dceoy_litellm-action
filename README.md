@@ -11,7 +11,7 @@ GitHub Action to install and run a local
 
 ```yaml
 steps:
-  - uses: dceoy/litellm-action@v0
+  - uses: dceoy/litellm-action@574e052ed206e2506ca60add18af350a3a56cbd8 # v0.1.2
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     with:
@@ -26,8 +26,8 @@ steps:
 
 ```yaml
 steps:
-  - uses: actions/checkout@v4
-  - uses: dceoy/litellm-action@v0
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  - uses: dceoy/litellm-action@574e052ed206e2506ca60add18af350a3a56cbd8 # v0.1.2
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     with:
@@ -38,7 +38,7 @@ steps:
 
 ```yaml
 steps:
-  - uses: dceoy/litellm-action@v0
+  - uses: dceoy/litellm-action@574e052ed206e2506ca60add18af350a3a56cbd8 # v0.1.2
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     with:
@@ -116,9 +116,10 @@ pnpm run test
 pnpm run build
 ```
 
-`pnpm run format:check` uses Biome for the repository's JavaScript,
-TypeScript, and JSON files. `pnpm run lint` uses Oxlint for the JavaScript and
-TypeScript lint pass.
+`pnpm run format:check` uses Biome for JavaScript, TypeScript, and JSON.
+`pnpm run lint` runs type-aware Oxlint on production sources and Biome's
+recommended rules for the repository. `pnpm run typecheck` uses TypeScript's
+strict compiler checks; CI also enforces Jest's coverage thresholds.
 
 `dist/main` and `dist/post` are generated with `@vercel/ncc` and should stay
 in sync with source changes.

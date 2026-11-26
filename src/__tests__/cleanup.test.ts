@@ -22,6 +22,7 @@ const readFileSyncMock = fs.readFileSync as jest.Mock;
 const platformMock = os.platform as jest.Mock;
 
 import { terminateProcess, cleanup } from '../cleanup';
+import process from 'node:process';
 
 describe('terminateProcess', () => {
   beforeEach(() => {
@@ -63,8 +64,12 @@ describe('cleanup', () => {
 
   it('should terminate process and display logs', async () => {
     coreMock.getState.mockImplementation((name: string) => {
-      if (name === 'pid') return '5678';
-      if (name === 'log-file') return '/tmp/litellm-proxy.log';
+      if (name === 'pid') {
+        return '5678';
+      }
+      if (name === 'log-file') {
+        return '/tmp/litellm-proxy.log';
+      }
       return '';
     });
 
@@ -88,7 +93,9 @@ describe('cleanup', () => {
 
   it('should handle ESRCH error when process already exited', async () => {
     coreMock.getState.mockImplementation((name: string) => {
-      if (name === 'pid') return '5678';
+      if (name === 'pid') {
+        return '5678';
+      }
       return '';
     });
 
@@ -109,7 +116,9 @@ describe('cleanup', () => {
 
   it('should warn on non-ESRCH termination errors', async () => {
     coreMock.getState.mockImplementation((name: string) => {
-      if (name === 'pid') return '5678';
+      if (name === 'pid') {
+        return '5678';
+      }
       return '';
     });
 
@@ -128,6 +137,46 @@ describe('cleanup', () => {
     killSpy.mockRestore();
   });
 
+  it('should warn on errors without an errno code', async () => {
+    coreMock.getState.mockImplementation((name: string) => {
+      if (name === 'pid') {
+        return '5678';
+      }
+      return '';
+    });
+
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw new Error('Unexpected termination failure');
+    });
+
+    await cleanup();
+
+    expect(coreMock.warning).toHaveBeenCalledWith(
+      'Failed to stop LiteLLM proxy: Unexpected termination failure',
+    );
+    killSpy.mockRestore();
+  });
+
+  it('should warn on non-Error termination failures', async () => {
+    coreMock.getState.mockImplementation((name: string) => {
+      if (name === 'pid') {
+        return '5678';
+      }
+      return '';
+    });
+
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw 'unexpected termination failure';
+    });
+
+    await cleanup();
+
+    expect(coreMock.warning).toHaveBeenCalledWith(
+      'Failed to stop LiteLLM proxy: Unknown error',
+    );
+    killSpy.mockRestore();
+  });
+
   it('should skip termination when no pid is saved', async () => {
     coreMock.getState.mockReturnValue('');
 
@@ -140,7 +189,9 @@ describe('cleanup', () => {
 
   it('should display "(no logs)" when log file is empty', async () => {
     coreMock.getState.mockImplementation((name: string) => {
-      if (name === 'log-file') return '/tmp/litellm-proxy.log';
+      if (name === 'log-file') {
+        return '/tmp/litellm-proxy.log';
+      }
       return '';
     });
 
@@ -154,7 +205,9 @@ describe('cleanup', () => {
 
   it('should not read log file when it does not exist', async () => {
     coreMock.getState.mockImplementation((name: string) => {
-      if (name === 'log-file') return '/tmp/litellm-proxy.log';
+      if (name === 'log-file') {
+        return '/tmp/litellm-proxy.log';
+      }
       return '';
     });
 
